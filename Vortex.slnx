@@ -1,5 +1,0 @@
-<Solution>
-  <Project Path="VortexEditor/VortexEditor.csproj" />
-  <Project Path="VortexEngine/VortexEngine.csproj" />
-  <Project Path="VortexGame/VortexGame.csproj" />
-</Solution>
