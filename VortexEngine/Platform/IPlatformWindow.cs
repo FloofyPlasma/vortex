@@ -9,9 +9,13 @@ public interface IPlatformWindow
 
     void Present();
     void Shutdown();
+    void ProcessEvents();
 
-    IInputState GetInputState();
-
-    event Action<uint, uint> OnResize;
-    event Action OnClosing;
+    event Action<IKeyEvent>? OnKeyDown;
+    event Action<IKeyEvent>? OnKeyUp;
+    event Action<IMouseMotionEvent>? OnMouseMotion;
+    event Action<IMouseButtonEvent>? OnMouseButtonDown;
+    event Action<IMouseButtonEvent>? OnMouseButtonUp;
+    event Action<uint, uint>? OnResize;
+    event Action? OnClosing;
 }
