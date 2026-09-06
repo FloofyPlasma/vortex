@@ -18,7 +18,11 @@ public class SDLWindow : IPlatformWindow
     {
         SDL.Init(SDL.InitFlags.Video);
 
+        #if WINDOWS || LINUX
         window = SDL.CreateWindow(title, (int)width, (int)height, SDL.WindowFlags.Vulkan);
+        #else
+        window = SDL.CreateWindow(title, (int)width, (int)height, 0);
+        #endif
 
         if (window == IntPtr.Zero)
         {
