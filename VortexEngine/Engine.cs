@@ -4,6 +4,7 @@ using VortexEngine.Core;
 using VortexEngine.Physics;
 using VortexEngine.Platform;
 using VortexEngine.Rendering;
+using VortexEngine.Rendering.Vulkan;
 
 namespace VortexEngine;
 
@@ -26,10 +27,14 @@ public sealed class Engine : IDisposable
         Audio = new AudioSystem();
     }
 
-    public void Initialize(IPlatformWindow window)
+    public void Initialize(IPlatformWindow platformWindow)
     {
-        this.window = window;
-        Renderer.Initialize(window.NativeHandle, window.Width, window.Height);
+        window = platformWindow;
+        
+        if (platformWindow is not IVulkanSurfaceProvider surfaceProvider)
+            throw new InvalidOperationException("IPlatformWindow must also implement IVulkanSurfaceProvider for Vulkan rendering");
+        
+        Renderer.Initialize(surfaceProvider, platformWindow.Width, platformWindow.Height);
     }
 
     public void Update(float dt)
