@@ -11,24 +11,26 @@ namespace VortexEngine.Rendering.Vulkan;
 internal sealed unsafe class VulkanRenderer : IDisposable
 {
     private VkInstance instance;
-    private VkInstanceApi instanceApi;
+    private VkInstanceApi instanceApi = default!;
 
     private VkPhysicalDevice physicalDevice;
     private VkDevice device;
-    private VkDeviceApi deviceApi;
+    private VkDeviceApi deviceApi = default!;
 
     private VkQueue graphicsQueue;
     private VkSurfaceKHR surface;
     private VkSwapchainKHR swapchain;
 
-    private VkImage[] swapchainImages;
-    private VkImageView[] swapchainImageViews;
+    private VkImage[] swapchainImages = null!;
+    private VkImageView[] swapchainImageViews = null!;
 
+    private VkShaderModule vertexShader;
+    private VkShaderModule fragmentShader;
     private VkPipeline pipeline;
     private VkPipelineLayout pipelineLayout;
 
     private VkCommandPool commandPool;
-    private VkCommandBuffer[] commandBuffers;
+    private VkCommandBuffer[] commandBuffers = null!;
 
     private VkSemaphore imageAvailableSemaphore;
     private VkSemaphore renderFinishedSemaphore;
@@ -39,8 +41,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private uint imageCount;
     private VkExtent2D swapchainExtent;
     private VkFormat swapchainImageFormat;
-
-    private bool disposed;
 
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
@@ -53,6 +53,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         SelectPhysicalDevice();
         CreateLogicalDevice();
         CreateSwapchain(width, height);
+        CreateShaders();
         CreatePipelineLayout();
         CreateGraphicsPipeline();
         CreateCommandPool();
@@ -237,6 +238,14 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         }
     }
 
+    private void CreateShaders()
+    {
+        var vertexCode = ShaderCompiler.LoadSpirV("VortexEngine/Rendering/Vulkan/Shaders/triangle.vert.spv");
+        vertexShader = ShaderCompiler.CreateShaderModule(deviceApi, vertexCode, "triangle.vert");
+        var fragmentCode = ShaderCompiler.LoadSpirV("VortexEngine/Rendering/Vulkan/Shaders/triangle.frag.spv");
+        fragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, fragmentCode, "triangle.frag");
+    }
+
     private void CreatePipelineLayout()
     {
         var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
@@ -251,7 +260,137 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateGraphicsPipeline()
     {
-        // TODO:
+        VkUtf8ReadOnlyString pVertexShaderStageName = "main"u8;
+        var vertexShaderStage = new VkPipelineShaderStageCreateInfo
+        {
+            sType = VkStructureType.PipelineShaderStageCreateInfo,
+            stage = VkShaderStageFlags.Vertex,
+            module = vertexShader,
+            pName = pVertexShaderStageName
+        };
+
+        VkUtf8String pFragmentShaderStageName = "main"u8;
+        var fragmentShaderStage = new VkPipelineShaderStageCreateInfo
+        {
+            sType = VkStructureType.PipelineShaderStageCreateInfo,
+            stage = VkShaderStageFlags.Fragment,
+            module = fragmentShader,
+            pName = pFragmentShaderStageName
+        };
+        
+        var shaderStages = new[] {vertexShaderStage, fragmentShaderStage};
+
+        var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
+        {
+            sType = VkStructureType.PipelineVertexInputStateCreateInfo,
+            vertexBindingDescriptionCount = 0,
+            vertexAttributeDescriptionCount = 0
+        };
+
+        var inputAssembly = new VkPipelineInputAssemblyStateCreateInfo
+        {
+            sType = VkStructureType.PipelineInputAssemblyStateCreateInfo,
+            topology = VkPrimitiveTopology.TriangleList,
+            primitiveRestartEnable = false
+        };
+
+        var viewport = new VkViewport
+        {
+            x = 0.0f,
+            y = 0.0f,
+            width = (float)swapchainExtent.width,
+            height = (float)swapchainExtent.height,
+            minDepth = 0.0f,
+            maxDepth = 1.0f,
+        };
+
+        var scissor = new VkRect2D
+        {
+            offset = new VkOffset2D(0, 0),
+            extent = swapchainExtent
+        };
+
+        var viewportState = new VkPipelineViewportStateCreateInfo
+        {
+            sType = VkStructureType.PipelineViewportStateCreateInfo,
+            viewportCount = 1,
+            pViewports = &viewport,
+            scissorCount = 1,
+            pScissors = &scissor
+        };
+
+        var rasterizer = new VkPipelineRasterizationStateCreateInfo
+        {
+            sType = VkStructureType.PipelineRasterizationStateCreateInfo,
+            depthClampEnable = false,
+            rasterizerDiscardEnable = false,
+            polygonMode = VkPolygonMode.Fill,
+            lineWidth = 1.0f,
+            cullMode = VkCullModeFlags.Back,
+            frontFace = VkFrontFace.Clockwise,
+            depthBiasEnable = false
+        };
+        
+        var multisampling = new VkPipelineMultisampleStateCreateInfo
+        {
+            sType = VkStructureType.PipelineMultisampleStateCreateInfo,
+            sampleShadingEnable = false,
+            rasterizationSamples = VkSampleCountFlags.Count1
+        };
+
+        var colorBlendAttachment = new VkPipelineColorBlendAttachmentState
+        {
+            colorWriteMask = VkColorComponentFlags.R | VkColorComponentFlags.G | VkColorComponentFlags.B | VkColorComponentFlags.A,
+            blendEnable = false
+        };
+
+        var colorBlending = new VkPipelineColorBlendStateCreateInfo
+        {
+            sType = VkStructureType.PipelineColorBlendStateCreateInfo,
+            logicOpEnable = false,
+            logicOp = VkLogicOp.Copy,
+            attachmentCount = 1,
+            pAttachments = &colorBlendAttachment
+        };
+
+        colorBlending.blendConstants[0] = 0.0f;
+        colorBlending.blendConstants[1] = 0.0f;
+        colorBlending.blendConstants[2] = 0.0f;
+        colorBlending.blendConstants[3] = 0.0f;
+
+        var colorFormat = swapchainImageFormat;
+        var pipelineRenderingCreateInfo = new VkPipelineRenderingCreateInfo
+        {
+            sType = VkStructureType.PipelineRenderingCreateInfo,
+            colorAttachmentCount = 1,
+            pColorAttachmentFormats = &colorFormat
+        };
+
+        var pipelineInfo = new VkGraphicsPipelineCreateInfo
+        {
+            sType = VkStructureType.GraphicsPipelineCreateInfo,
+            stageCount = 2,
+            pVertexInputState = &vertexInputInfo,
+            pInputAssemblyState = &inputAssembly,
+            pViewportState = &viewportState,
+            pRasterizationState = &rasterizer,
+            pMultisampleState = &multisampling,
+            pColorBlendState = &colorBlending,
+            layout = pipelineLayout,
+            pNext = &pipelineRenderingCreateInfo
+        };
+
+        fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
+        {
+            pipelineInfo.pStages = pShaderStages;
+
+            var pipelines = new VkPipeline[1];
+            fixed (VkPipeline* pPipelines = pipelines)
+            {
+                deviceApi.vkCreateGraphicsPipelines(VkPipelineCache.Null, 1, &pipelineInfo, pPipelines).CheckResult();
+            }
+            pipeline = pipelines[0];
+        }
     }
 
     private void CreateCommandPool()
@@ -342,7 +481,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkCmdBeginRendering(commandBuffers[imageIndex], &renderingInfo);
 
-        // TODO: Bind pipeline and draw calls
+        deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, pipeline);
+        deviceApi.vkCmdDraw(commandBuffers[imageIndex], 3, 1, 0, 0);
 
         deviceApi.vkCmdEndRendering(commandBuffers[imageIndex]);
 
