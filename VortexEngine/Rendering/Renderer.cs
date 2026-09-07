@@ -1,24 +1,27 @@
+using VortexEngine.Rendering.Vulkan;
+
 namespace VortexEngine.Rendering;
 
 public sealed class Renderer : IDisposable
 {
-    public void Initialize(nint nativeHandle, uint width, uint height)
+    private VulkanRenderer? vulkanRenderer;
+    
+    public void Initialize(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
-        // TODO: 
+        vulkanRenderer = new VulkanRenderer(surfaceProvider, width, height);
     }
 
     public void Render(RenderRequest request)
     {
-        // TODO:
+        vulkanRenderer?.Render();
     }
 
     public void Present()
     {
-        // TODO:
     }
 
     public void Dispose()
     {
-        // TODO: 
+        vulkanRenderer?.Dispose();
     }
 }

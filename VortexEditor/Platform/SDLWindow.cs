@@ -1,10 +1,12 @@
 using SDL3;
 using VortexEngine.Platform;
+using VortexEngine.Rendering.Vulkan;
+using Vortice.Vulkan;
 
 namespace VortexEditor.Platform;
 
 // ReSharper disable once InconsistentNaming
-public class SDLWindow : IPlatformWindow
+public class SDLWindow : IPlatformWindow, IVulkanSurfaceProvider
 {
     private IntPtr window;
     private bool isOpen;
@@ -28,6 +30,20 @@ public class SDLWindow : IPlatformWindow
         Width = width;
         Height = height;
         isOpen = true;
+    }
+
+    public void GetRequiredExtensions(out string[] extensions)
+    {
+        extensions = SDL.VulkanGetInstanceExtensions(out _) ?? throw new InvalidOperationException("Failed to get Vulkan instance extensions");
+    }
+
+    public void CreateSurface(VkInstance instance, out VkSurfaceKHR surface)
+    {
+        var success = SDL.VulkanCreateSurface(window, instance.Handle, IntPtr.Zero, out var surfaceHandle);
+        
+        if (!success) throw new InvalidOperationException($"Failed to create Vulkan surface: {SDL.GetError()}");
+
+        surface = new VkSurfaceKHR((ulong)surfaceHandle);
     }
 
     public void ProcessEvents()
