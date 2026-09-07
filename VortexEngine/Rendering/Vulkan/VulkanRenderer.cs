@@ -2,6 +2,7 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using Vortice.ShaderCompiler;
 using Vortice.Vulkan;
 using static Vortice.Vulkan.Vulkan;
 
@@ -240,9 +241,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateShaders()
     {
-        var vertexCode = ShaderCompiler.LoadSpirV("VortexEngine/Rendering/Vulkan/Shaders/triangle.vert.spv");
+        var vertexCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.vert", ShaderKind.VertexShader);
         vertexShader = ShaderCompiler.CreateShaderModule(deviceApi, vertexCode, "triangle.vert");
-        var fragmentCode = ShaderCompiler.LoadSpirV("VortexEngine/Rendering/Vulkan/Shaders/triangle.frag.spv");
+        var fragmentCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.frag", ShaderKind.FragmentShader);
         fragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, fragmentCode, "triangle.frag");
     }
 
