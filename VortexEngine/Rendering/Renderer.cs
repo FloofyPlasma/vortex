@@ -5,10 +5,20 @@ namespace VortexEngine.Rendering;
 public sealed class Renderer : IDisposable
 {
     private VulkanRenderer? vulkanRenderer;
-    
+
+    public void Dispose()
+    {
+        vulkanRenderer?.Dispose();
+    }
+
     public void Initialize(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
         vulkanRenderer = new VulkanRenderer(surfaceProvider, width, height);
+    }
+
+    public MeshHandle LoadMesh(byte[] meshData)
+    {
+        return vulkanRenderer.LoadMesh(meshData);
     }
 
     public void Render(RenderRequest request)
@@ -19,9 +29,16 @@ public sealed class Renderer : IDisposable
     public void Present()
     {
     }
+}
 
-    public void Dispose()
-    {
-        vulkanRenderer?.Dispose();
-    }
+public struct MeshHandle
+{
+    public uint Id { get; }
+    internal MeshHandle(uint id) => Id = id;
+}
+
+public struct MaterialHandle
+{
+    public uint Id { get; }
+    internal MaterialHandle(uint id) => Id = id;
 }

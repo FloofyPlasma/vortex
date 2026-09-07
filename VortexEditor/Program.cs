@@ -16,6 +16,9 @@ internal class Program
         {
             engine.Initialize(window);
 
+            var meshBytes = File.ReadAllBytes("VortexEditor/Assets/Box.glb");
+            var meshHandle = engine.Renderer.LoadMesh(meshBytes);
+
             var clock = Stopwatch.StartNew();
 
             while (window.IsOpen)
