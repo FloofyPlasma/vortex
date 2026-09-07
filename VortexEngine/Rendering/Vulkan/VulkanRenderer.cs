@@ -1,7 +1,4 @@
-using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Text;
 using Vortice.ShaderCompiler;
 using Vortice.Vulkan;
 using static Vortice.Vulkan.Vulkan;
@@ -11,37 +8,39 @@ namespace VortexEngine.Rendering.Vulkan;
 // Unsafe is unavoidable due to Vulkan API design lol
 internal sealed unsafe class VulkanRenderer : IDisposable
 {
+    private const int MaxFramesInFlight = 2;
+    private VkCommandBuffer[] commandBuffers = null!;
+
+    private VkCommandPool commandPool;
+    private int currentFrame = 0;
+    private VkDevice device;
+    private VkDeviceApi deviceApi = default!;
+    private VkShaderModule fragmentShader;
+
+    private VkQueue graphicsQueue;
+
+    private uint graphicsQueueFamily;
+    private VkSemaphore[] imageAvailableSemaphores = null!;
+    private uint imageCount;
+
+    private VkFence[] inFlightFences = null!;
     private VkInstance instance;
     private VkInstanceApi instanceApi = default!;
 
     private VkPhysicalDevice physicalDevice;
-    private VkDevice device;
-    private VkDeviceApi deviceApi = default!;
-
-    private VkQueue graphicsQueue;
-    private VkSurfaceKHR surface;
-    private VkSwapchainKHR swapchain;
-
-    private VkImage[] swapchainImages = null!;
-    private VkImageView[] swapchainImageViews = null!;
-
-    private VkShaderModule vertexShader;
-    private VkShaderModule fragmentShader;
     private VkPipeline pipeline;
     private VkPipelineLayout pipelineLayout;
-
-    private VkCommandPool commandPool;
-    private VkCommandBuffer[] commandBuffers = null!;
-
-    private VkSemaphore imageAvailableSemaphore;
-    private VkSemaphore renderFinishedSemaphore;
-    private VkFence inFlightFence;
-
-    private uint graphicsQueueFamily;
     private uint presentQueueFamily;
-    private uint imageCount;
+    private VkSemaphore[] renderFinishedSemaphores = null!;
+    private VkSurfaceKHR surface;
+    private VkSwapchainKHR swapchain;
     private VkExtent2D swapchainExtent;
     private VkFormat swapchainImageFormat;
+    private VkImageView[] swapchainImageViews = null!;
+
+    private VkImage[] swapchainImages = null!;
+
+    private VkShaderModule vertexShader;
 
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
@@ -60,6 +59,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateCommandPool();
         CreateCommandBuffers();
         CreateSyncPrimitives();
+    }
+
+    public void Dispose()
+    {
     }
 
     private void CreateInstance(IVulkanSurfaceProvider surfaceProvider)
@@ -241,9 +244,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateShaders()
     {
-        var vertexCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.vert", ShaderKind.VertexShader);
+        var vertexCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.vert",
+            ShaderKind.VertexShader);
         vertexShader = ShaderCompiler.CreateShaderModule(deviceApi, vertexCode, "triangle.vert");
-        var fragmentCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.frag", ShaderKind.FragmentShader);
+        var fragmentCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/triangle.frag",
+            ShaderKind.FragmentShader);
         fragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, fragmentCode, "triangle.frag");
     }
 
@@ -278,8 +283,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             module = fragmentShader,
             pName = pFragmentShaderStageName
         };
-        
-        var shaderStages = new[] {vertexShaderStage, fragmentShaderStage};
+
+        var shaderStages = new[] { vertexShaderStage, fragmentShaderStage };
 
         var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
         {
@@ -331,7 +336,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             frontFace = VkFrontFace.Clockwise,
             depthBiasEnable = false
         };
-        
+
         var multisampling = new VkPipelineMultisampleStateCreateInfo
         {
             sType = VkStructureType.PipelineMultisampleStateCreateInfo,
@@ -341,7 +346,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         var colorBlendAttachment = new VkPipelineColorBlendAttachmentState
         {
-            colorWriteMask = VkColorComponentFlags.R | VkColorComponentFlags.G | VkColorComponentFlags.B | VkColorComponentFlags.A,
+            colorWriteMask = VkColorComponentFlags.R | VkColorComponentFlags.G | VkColorComponentFlags.B |
+                             VkColorComponentFlags.A,
             blendEnable = false
         };
 
@@ -390,6 +396,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             {
                 deviceApi.vkCreateGraphicsPipelines(VkPipelineCache.Null, 1, &pipelineInfo, pPipelines).CheckResult();
             }
+
             pipeline = pipelines[0];
         }
     }
@@ -425,32 +432,41 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateSyncPrimitives()
     {
+        inFlightFences = new VkFence[MaxFramesInFlight];
+        imageAvailableSemaphores = new VkSemaphore[MaxFramesInFlight];
+        renderFinishedSemaphores = new VkSemaphore[MaxFramesInFlight];
+
+
         var semaphoreInfo = new VkSemaphoreCreateInfo
         {
             sType = VkStructureType.SemaphoreCreateInfo,
         };
 
-        deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out imageAvailableSemaphore).CheckResult();
-        deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out renderFinishedSemaphore).CheckResult();
-
-        var fenceInfo = new VkFenceCreateInfo
+        for (int i = 0; i < MaxFramesInFlight; i++)
         {
-            sType = VkStructureType.FenceCreateInfo,
-            flags = VkFenceCreateFlags.Signaled
-        };
+            deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out imageAvailableSemaphores[i]).CheckResult();
+            deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out renderFinishedSemaphores[i]).CheckResult();
 
-        deviceApi.vkCreateFence(&fenceInfo, null, out inFlightFence).CheckResult();
+            var fenceInfo = new VkFenceCreateInfo
+            {
+                sType = VkStructureType.FenceCreateInfo,
+                flags = VkFenceCreateFlags.Signaled
+            };
+
+            deviceApi.vkCreateFence(&fenceInfo, null, out inFlightFences[i]).CheckResult();
+        }
     }
 
     public void Render()
     {
-        fixed (VkFence* pFence = &inFlightFence)
-        {
-            deviceApi.vkWaitForFences(1, pFence, true, ulong.MaxValue).CheckResult();
-            deviceApi.vkResetFences(1, pFence).CheckResult();
-        }
+        var fence = inFlightFences[currentFrame];
+        var imageAvail = imageAvailableSemaphores[currentFrame];
+        var renderDone = renderFinishedSemaphores[currentFrame];
 
-        deviceApi.vkAcquireNextImageKHR(swapchain, ulong.MaxValue, imageAvailableSemaphore, VkFence.Null,
+        deviceApi.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+        deviceApi.vkResetFences(1, &fence).CheckResult();
+
+        deviceApi.vkAcquireNextImageKHR(swapchain, ulong.MaxValue, imageAvail, VkFence.Null,
             out var imageIndex).CheckResult();
         deviceApi.vkResetCommandBuffer(commandBuffers[imageIndex], VkCommandBufferResetFlags.None).CheckResult();
 
@@ -489,8 +505,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkEndCommandBuffer(commandBuffers[imageIndex]);
 
-        var waitSemaphores = new[] { imageAvailableSemaphore };
-        var signalSemaphores = new[] { renderFinishedSemaphore };
+        var waitSemaphores = new[] { imageAvail };
+        var signalSemaphores = new[] { renderDone };
         var waitStages = new[] { VkPipelineStageFlags.ColorAttachmentOutput };
 
         fixed (VkSemaphore* pWaitSemaphores = waitSemaphores)
@@ -510,7 +526,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pSignalSemaphores = pSignalSemaphores
             };
 
-            deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, inFlightFence).CheckResult();
+            deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, fence).CheckResult();
         }
 
         fixed (VkSemaphore* pSignalSemaphores = signalSemaphores)
@@ -528,9 +544,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
             deviceApi.vkQueuePresentKHR(graphicsQueue, &presentInfo).CheckResult();
         }
-    }
 
-    public void Dispose()
-    {
+        currentFrame = (currentFrame + 1) % MaxFramesInFlight;
     }
 }
