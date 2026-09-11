@@ -17,6 +17,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private VkCommandPool commandPool;
     private int currentFrame = 0;
+
+    private VkImage depthImage;
+    private VmaAllocation depthImageAllocation;
+    private VkImageView depthImageView;
     private VkDevice device;
     private VkDeviceApi deviceApi = default!;
 
@@ -70,6 +74,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateTriangleGraphicsPipeline();
         CreateMeshGraphicsPipeline();
         CreateCommandPool();
+        TransitionDepthImage();
         CreateCommandBuffers();
         CreateSyncPrimitives();
     }
@@ -81,6 +86,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             Vma.vmaDestroyBuffer(allocator, mesh.VertexBuffer, mesh.VertexAllocation);
             Vma.vmaDestroyBuffer(allocator, mesh.IndexBuffer, mesh.IndexAllocation);
         }
+
+        deviceApi.vkDestroyImageView(depthImageView, null);
+        Vma.vmaDestroyImage(allocator, depthImage, depthImageAllocation);
 
         Vma.vmaDestroyAllocator(allocator);
     }
@@ -260,6 +268,48 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             deviceApi.vkCreateImageView(&createViewInfo, null, &imageView).CheckResult();
             swapchainImageViews[i] = imageView;
         }
+
+        // Depth image 
+        var depthImageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = VkFormat.D32Sfloat,
+            extent = new VkExtent3D { width = swapchainExtent.width, height = swapchainExtent.height, depth = 1 },
+            mipLevels = 1,
+            arrayLayers = 1,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.DepthStencilAttachment,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice,
+        };
+
+        Vma.vmaCreateImage(allocator, depthImageInfo, allocInfo, out depthImage, out depthImageAllocation)
+            .CheckResult();
+
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = depthImage,
+            viewType = VkImageViewType.Image2D,
+            format = VkFormat.D32Sfloat,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Depth,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out depthImageView).CheckResult();
     }
 
     private void CreateShaders()
@@ -410,6 +460,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pColorAttachmentFormats = &colorFormat
         };
 
+        var depthStencil = new VkPipelineDepthStencilStateCreateInfo
+        {
+            sType = VkStructureType.PipelineDepthStencilStateCreateInfo,
+            depthTestEnable = true,
+            depthWriteEnable = true,
+            depthCompareOp = VkCompareOp.Less,
+            depthBoundsTestEnable = false,
+            stencilTestEnable = false,
+        };
+
         var pipelineInfo = new VkGraphicsPipelineCreateInfo
         {
             sType = VkStructureType.GraphicsPipelineCreateInfo,
@@ -421,7 +481,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pMultisampleState = &multisampling,
             pColorBlendState = &colorBlending,
             layout = pipelineLayout,
-            pNext = &pipelineRenderingCreateInfo
+            pNext = &pipelineRenderingCreateInfo,
+            pDepthStencilState = &depthStencil,
         };
 
         fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
@@ -572,7 +633,18 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         {
             sType = VkStructureType.PipelineRenderingCreateInfo,
             colorAttachmentCount = 1,
-            pColorAttachmentFormats = &colorFormat
+            pColorAttachmentFormats = &colorFormat,
+            depthAttachmentFormat = VkFormat.D32Sfloat
+        };
+
+        var depthStencil = new VkPipelineDepthStencilStateCreateInfo
+        {
+            sType = VkStructureType.PipelineDepthStencilStateCreateInfo,
+            depthTestEnable = true,
+            depthWriteEnable = true,
+            depthCompareOp = VkCompareOp.LessOrEqual,
+            depthBoundsTestEnable = false,
+            stencilTestEnable = false,
         };
 
         var pipelineInfo = new VkGraphicsPipelineCreateInfo
@@ -586,7 +658,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pMultisampleState = &multisampling,
             pColorBlendState = &colorBlending,
             layout = pipelineLayout,
-            pNext = &pipelineRenderingCreateInfo
+            pNext = &pipelineRenderingCreateInfo,
+            pDepthStencilState = &depthStencil
         };
 
         fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
@@ -694,49 +767,94 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             storeOp = VkAttachmentStoreOp.Store
         };
 
+        var depthAttachment = new VkRenderingAttachmentInfo
+        {
+            sType = VkStructureType.RenderingAttachmentInfo,
+            imageView = depthImageView,
+            imageLayout = VkImageLayout.DepthStencilAttachmentOptimal,
+            clearValue = new VkClearValue { depthStencil = new VkClearDepthStencilValue(depth: 1.0f, stencil: 0) },
+            loadOp = VkAttachmentLoadOp.Clear,
+            storeOp = VkAttachmentStoreOp.DontCare,
+        };
+
         var renderingInfo = new VkRenderingInfo
         {
             sType = VkStructureType.RenderingInfo,
             renderArea = new VkRect2D { offset = new VkOffset2D(0, 0), extent = swapchainExtent },
             layerCount = 1,
             colorAttachmentCount = 1,
-            pColorAttachments = &colorAttachment
+            pColorAttachments = &colorAttachment,
+            pDepthAttachment = &depthAttachment,
         };
 
         deviceApi.vkCmdBeginRendering(commandBuffers[imageIndex], &renderingInfo);
+
 
         deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, trianglePipeline);
 
         if (meshes.Count > 0)
         {
-            var model = Matrix4x4.CreateRotationY(rotation);
+            {
+                var model = Matrix4x4.CreateRotationY(rotation);
 
-            var view = Matrix4x4.CreateLookAt(
-                new Vector3(0, 2, 3),
-                Vector3.Zero,
-                Vector3.UnitY
-            );
+                var view = Matrix4x4.CreateLookAt(
+                    new Vector3(0, 2, 3),
+                    Vector3.Zero,
+                    Vector3.UnitY
+                );
 
-            var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-                MathF.PI / 4.0f,
-                swapchainExtent.width / (float)swapchainExtent.height,
-                0.1f,
-                100.0f
-            );
+                var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+                    MathF.PI / 4.0f,
+                    swapchainExtent.width / (float)swapchainExtent.height,
+                    0.1f,
+                    100.0f
+                );
 
-            var mvp = model * view * projection;
+                var mvp = model * view * projection;
 
-            var mesh = meshes[0];
-            var offset = 0UL;
-            deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
+                var mesh = meshes[0];
+                var offset = 0UL;
+                deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
 
-            var pushData = new PushConstants { Mvp = mvp, Model = model };
-            deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
-                (uint)sizeof(PushConstants), &pushData);
+                var pushData = new PushConstants { Mvp = mvp, Model = model };
+                deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
+                    (uint)sizeof(PushConstants), &pushData);
 
-            deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
-            deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
-            deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], mesh.IndexCount, 1, 0, 0, 0);
+                deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
+                deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
+                deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], mesh.IndexCount, 1, 0, 0, 0);
+            }
+            {
+                var model = Matrix4x4.CreateRotationY(-rotation) * Matrix4x4.CreateRotationX(rotation) *
+                            Matrix4x4.CreateTranslation(0, -2.5f, -2.0f);
+
+                var view = Matrix4x4.CreateLookAt(
+                    new Vector3(0, 2, 3),
+                    Vector3.Zero,
+                    Vector3.UnitY
+                );
+
+                var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+                    MathF.PI / 4.0f,
+                    swapchainExtent.width / (float)swapchainExtent.height,
+                    0.1f,
+                    100.0f
+                );
+
+                var mvp = model * view * projection;
+
+                var mesh = meshes[0];
+                var offset = 0UL;
+                deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
+
+                var pushData = new PushConstants { Mvp = mvp, Model = model };
+                deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
+                    (uint)sizeof(PushConstants), &pushData);
+
+                deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
+                deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
+                deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], mesh.IndexCount, 1, 0, 0, 0);
+            }
         }
         else
         {
@@ -971,6 +1089,72 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         meshes.Add(meshObj);
 
         return new MeshHandle((uint)(meshes.Count - 1));
+    }
+
+    private void TransitionDepthImage()
+    {
+        var allocInfo = new VkCommandBufferAllocateInfo
+        {
+            sType = VkStructureType.CommandBufferAllocateInfo,
+            level = VkCommandBufferLevel.Primary,
+            commandPool = commandPool,
+            commandBufferCount = 1,
+        };
+
+        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var commandBuffer).CheckResult();
+
+        var beginInfo = new VkCommandBufferBeginInfo
+        {
+            sType = VkStructureType.CommandBufferBeginInfo,
+            flags = VkCommandBufferUsageFlags.OneTimeSubmit
+        };
+
+        deviceApi.vkBeginCommandBuffer(commandBuffer, &beginInfo).CheckResult();
+
+        var barrier = new VkImageMemoryBarrier
+        {
+            sType = VkStructureType.ImageMemoryBarrier,
+            srcAccessMask = 0,
+            dstAccessMask = VkAccessFlags.DepthStencilAttachmentRead |
+                            VkAccessFlags.DepthStencilAttachmentWrite,
+            oldLayout = VkImageLayout.Undefined,
+            newLayout = VkImageLayout.DepthStencilAttachmentOptimal,
+            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            image = depthImage,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Depth,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1
+            }
+        };
+
+        deviceApi.vkCmdPipelineBarrier(
+            commandBuffer,
+            VkPipelineStageFlags.TopOfPipe,
+            VkPipelineStageFlags.EarlyFragmentTests |
+            VkPipelineStageFlags.LateFragmentTests,
+            VkDependencyFlags.None,
+            0, null,
+            0, null,
+            1, &barrier);
+
+        deviceApi.vkEndCommandBuffer(commandBuffer).CheckResult();
+
+        var submitInfo = new VkSubmitInfo
+        {
+            sType = VkStructureType.SubmitInfo,
+            commandBufferCount = 1,
+            pCommandBuffers = &commandBuffer
+        };
+
+        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+
+        deviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
     }
 }
 
