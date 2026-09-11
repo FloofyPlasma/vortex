@@ -287,7 +287,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         {
             stageFlags = VkShaderStageFlags.Vertex,
             offset = 0,
-            size = (uint)sizeof(Matrix4x4)
+            size = (uint)sizeof(Matrix4x4) * 2
         };
 
         var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
@@ -467,12 +467,20 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             inputRate = VkVertexInputRate.Vertex
         };
 
-        var attributeDescription = new VkVertexInputAttributeDescription
+        var attributeDescriptions = stackalloc VkVertexInputAttributeDescription[2];
+        attributeDescriptions[0] = new VkVertexInputAttributeDescription
         {
             location = 0,
             binding = 0,
             format = VkFormat.R32G32B32Sfloat,
-            offset = 0
+            offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.Position))
+        };
+        attributeDescriptions[1] = new VkVertexInputAttributeDescription
+        {
+            location = 1,
+            binding = 0,
+            format = VkFormat.R32G32B32Sfloat,
+            offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.Normal))
         };
 
         var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
@@ -480,8 +488,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             sType = VkStructureType.PipelineVertexInputStateCreateInfo,
             vertexBindingDescriptionCount = 1,
             pVertexBindingDescriptions = &bindingDescription,
-            vertexAttributeDescriptionCount = 1,
-            pVertexAttributeDescriptions = &attributeDescription
+            vertexAttributeDescriptionCount = 2,
+            pVertexAttributeDescriptions = attributeDescriptions
         };
 
         var inputAssembly = new VkPipelineInputAssemblyStateCreateInfo
@@ -722,8 +730,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             var offset = 0UL;
             deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
 
+            var pushData = new PushConstants { Mvp = mvp, Model = model };
             deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
-                (uint)sizeof(Matrix4x4), &mvp);
+                (uint)sizeof(PushConstants), &pushData);
 
             deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
             deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
@@ -881,6 +890,37 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         Vma.vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
     }
 
+    private Vector3[] ComputeNormals(Vector3[] positions, uint[] indices)
+    {
+        var normals = new Vector3[positions.Length];
+
+        for (var i = 0; i < indices.Length; i += 3)
+        {
+            var i0 = (int)indices[i];
+            var i1 = (int)indices[i + 1];
+            var i2 = (int)indices[i + 2];
+
+            var v0 = positions[i0];
+            var v1 = positions[i1];
+            var v2 = positions[i2];
+
+            var edge1 = v1 - v0;
+            var edge2 = v2 - v0;
+            var faceNormal = Vector3.Cross(edge1, edge2);
+
+            normals[i0] += faceNormal;
+            normals[i1] += faceNormal;
+            normals[i2] += faceNormal;
+        }
+
+        for (var i = 0; i < normals.Length; i++)
+        {
+            normals[i] = Vector3.Normalize(normals[i]);
+        }
+
+        return normals;
+    }
+
     public MeshHandle LoadMesh(byte[] meshData)
     {
         var model = ModelRoot.ParseGLB(meshData);
@@ -888,10 +928,21 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var primitive = mesh.Primitives[0];
         Console.WriteLine($"Logical Meshes: {model.LogicalMeshes.Count}, Primitives: {mesh.Primitives.Count}");
 
-        var positions = primitive.GetVertexAccessor("POSITION").AsVector3Array();
+        var positions = primitive.GetVertexAccessor("POSITION").AsVector3Array().ToArray();
+        var normals = primitive.GetVertexAccessor("NORMAL")?.AsVector3Array().ToArray() ??
+                      ComputeNormals([.. positions], [.. primitive.GetIndices()]);
         var indices = primitive.GetIndices().ToArray();
 
-        var vertices = positions.Select(p => new Vertex { Position = p }).ToArray();
+        var vertices = new Vertex[positions.Length];
+
+        for (var i = 0; i < positions.Length; i++)
+        {
+            vertices[i] = new Vertex
+            {
+                Position = positions[i],
+                Normal = normals[i]
+            };
+        }
 
         var vertexBuffer = CreateBuffer(
             (ulong)(vertices.Length * sizeof(Vertex)),
@@ -921,4 +972,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         return new MeshHandle((uint)(meshes.Count - 1));
     }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+struct PushConstants
+{
+    public Matrix4x4 Mvp;
+    public Matrix4x4 Model;
 }

@@ -8,6 +8,7 @@ namespace VortexEngine.Rendering;
 internal struct Vertex
 {
     public Vector3 Position;
+    public Vector3 Normal;
 }
 
 internal struct Mesh
