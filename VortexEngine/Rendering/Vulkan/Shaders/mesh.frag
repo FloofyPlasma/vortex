@@ -2,6 +2,9 @@
 
 layout (location = 0) in vec3 fragNormal;
 layout (location = 1) in vec3 fragPos;
+layout (location = 2) in vec2 fragTexCoord;
+
+layout (set = 0, binding = 0) uniform sampler2D uTexture;
 
 layout (location = 0) out vec4 outColor;
 
@@ -22,6 +25,7 @@ void main() {
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
     vec3 specular = spec * vec3(1.0);
 
-    vec3 result = ambient + diffuse + specular;
+    vec3 texColor = texture(uTexture, fragTexCoord).rgb;
+    vec3 result = (ambient + diffuse + specular) * texColor;
     outColor = vec4(result, 1.0);
 }

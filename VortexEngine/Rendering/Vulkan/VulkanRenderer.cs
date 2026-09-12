@@ -2,9 +2,11 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using SharpGLTF.Schema2;
+using SixLabors.ImageSharp.PixelFormats;
 using Vortice.ShaderCompiler;
 using Vortice.Vulkan;
 using static Vortice.Vulkan.Vulkan;
+using Image = SixLabors.ImageSharp.Image;
 
 namespace VortexEngine.Rendering.Vulkan;
 
@@ -21,6 +23,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkImage depthImage;
     private VmaAllocation depthImageAllocation;
     private VkImageView depthImageView;
+
+    private VkDescriptorPool descriptorPool;
+    private VkDescriptorSetLayout descriptorSetLayout;
     private VkDevice device;
     private VkDeviceApi deviceApi = default!;
 
@@ -36,6 +41,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkShaderModule meshFragmentShader;
     private VkPipeline meshPipeline;
     private VkShaderModule meshVertexShader;
+
     private List<Mesh> meshes = [];
 
     private VkPhysicalDevice physicalDevice;
@@ -52,6 +58,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkImageView[] swapchainImageViews = null!;
 
     private VkImage[] swapchainImages = null!;
+    private List<VkImageView> textureImageViews = [];
+    private List<VkImage> textureImages = [];
+    private List<VkSampler> textureSamplers = [];
     private VkShaderModule triangleFragmentShader;
     private VkPipeline trianglePipeline;
 
@@ -70,6 +79,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateAllocator();
         CreateSwapchain(width, height);
         CreateShaders();
+        CreateDescriptorSetLayout();
+        CreateDescriptorPool();
         CreatePipelineLayout();
         CreateTriangleGraphicsPipeline();
         CreateMeshGraphicsPipeline();
@@ -91,6 +102,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         }
 
         deviceApi.vkDestroyImageView(depthImageView, null);
+
+        deviceApi.vkDestroyDescriptorPool(descriptorPool, null);
+        deviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout, null);
+
         Vma.vmaDestroyImage(allocator, depthImage, depthImageAllocation);
 
         Vma.vmaDestroyAllocator(allocator);
@@ -343,15 +358,19 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             size = (uint)sizeof(Matrix4x4) * 2
         };
 
-        var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
+        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout)
         {
-            sType = VkStructureType.PipelineLayoutCreateInfo,
-            setLayoutCount = 0,
-            pushConstantRangeCount = 1,
-            pPushConstantRanges = &pushConstantRange,
-        };
+            var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
+            {
+                sType = VkStructureType.PipelineLayoutCreateInfo,
+                setLayoutCount = 1,
+                pSetLayouts = pDescriptorSetLayout,
+                pushConstantRangeCount = 1,
+                pPushConstantRanges = &pushConstantRange,
+            };
 
-        deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
+            deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
+        }
     }
 
     private void CreateTriangleGraphicsPipeline()
@@ -531,7 +550,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             inputRate = VkVertexInputRate.Vertex
         };
 
-        var attributeDescriptions = stackalloc VkVertexInputAttributeDescription[2];
+        var attributeDescriptions = stackalloc VkVertexInputAttributeDescription[3];
         attributeDescriptions[0] = new VkVertexInputAttributeDescription
         {
             location = 0,
@@ -546,13 +565,25 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             format = VkFormat.R32G32B32Sfloat,
             offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.Normal))
         };
+        attributeDescriptions[2] = new VkVertexInputAttributeDescription
+        {
+            location = 2,
+            binding = 0,
+            format = VkFormat.R32G32Sfloat,
+            offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.TexCoord))
+        };
+
+        Console.WriteLine($"Position offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Position))}");
+        Console.WriteLine($"Normal offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Normal))}");
+        Console.WriteLine($"TexCoord offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.TexCoord))}");
+        Console.WriteLine($"Stride: {sizeof(Vertex)}");
 
         var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
         {
             sType = VkStructureType.PipelineVertexInputStateCreateInfo,
             vertexBindingDescriptionCount = 1,
             pVertexBindingDescriptions = &bindingDescription,
-            vertexAttributeDescriptionCount = 2,
+            vertexAttributeDescriptionCount = 3,
             pVertexAttributeDescriptions = attributeDescriptions
         };
 
@@ -566,9 +597,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var viewport = new VkViewport
         {
             x = 0.0f,
-            y = 0.0f,
+            y = swapchainExtent.height,
             width = (float)swapchainExtent.width,
-            height = (float)swapchainExtent.height,
+            height = (float)-swapchainExtent.height,
             minDepth = 0.0f,
             maxDepth = 1.0f,
         };
@@ -596,7 +627,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             polygonMode = VkPolygonMode.Fill,
             lineWidth = 1.0f,
             cullMode = VkCullModeFlags.Back,
-            frontFace = VkFrontFace.Clockwise,
+            frontFace = VkFrontFace.CounterClockwise,
             depthBiasEnable = false
         };
 
@@ -801,6 +832,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
                             Matrix4x4.CreateScale(15.0f);
 
+
                 var view = Matrix4x4.CreateLookAt(
                     new Vector3(0, 2, 3),
                     Vector3.Zero,
@@ -826,6 +858,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 foreach (var primitive in mesh.Primitives)
                 {
+                    deviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                        pipelineLayout, 0, 1, &primitive.DescriptorSet, 0, null);
+
                     deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer, offset);
                     deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], primitive.IndexBuffer, 0,
                         VkIndexType.Uint32);
@@ -985,6 +1020,148 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         Vma.vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
     }
 
+    private void UploadMeshData(ReadOnlySpan<byte> data, VkImage dstImage, uint width, uint height, VkFormat format)
+    {
+        var stagingBuffer = CreateBuffer((ulong)data.Length, VkBufferUsageFlags.TransferSrc,
+            VmaMemoryUsage.AutoPreferHost, out var stagingAlloc);
+
+        void* mapped = null;
+        Vma.vmaMapMemory(allocator, stagingAlloc, &mapped).CheckResult();
+        data.CopyTo(new Span<byte>(mapped, data.Length));
+        Vma.vmaUnmapMemory(allocator, stagingAlloc);
+
+        TransitionImageLayout(dstImage, format, VkImageLayout.Undefined, VkImageLayout.TransferDstOptimal);
+
+        CopyBufferToImage(stagingBuffer, dstImage, width, height);
+
+        TransitionImageLayout(dstImage, format, VkImageLayout.TransferDstOptimal, VkImageLayout.ShaderReadOnlyOptimal);
+
+        Vma.vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
+    }
+
+    private void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
+    {
+        var allocInfo = new VkCommandBufferAllocateInfo
+        {
+            sType = VkStructureType.CommandBufferAllocateInfo,
+            level = VkCommandBufferLevel.Primary,
+            commandPool = commandPool,
+            commandBufferCount = 1,
+        };
+
+        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
+
+        var beginInfo = new VkCommandBufferBeginInfo
+        {
+            sType = VkStructureType.CommandBufferBeginInfo,
+            flags = VkCommandBufferUsageFlags.OneTimeSubmit
+        };
+
+        deviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
+
+        var barrier = new VkImageMemoryBarrier
+        {
+            sType = VkStructureType.ImageMemoryBarrier,
+            oldLayout = oldLayout,
+            newLayout = newLayout,
+            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            image = image,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1
+            }
+        };
+
+        var srcStage = VkPipelineStageFlags.TopOfPipe;
+        var dstStage = VkPipelineStageFlags.FragmentShader;
+
+        if (oldLayout == VkImageLayout.Undefined && newLayout == VkImageLayout.TransferDstOptimal)
+        {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VkAccessFlags.TransferWrite;
+        }
+        else if (oldLayout == VkImageLayout.TransferDstOptimal && newLayout == VkImageLayout.ShaderReadOnlyOptimal)
+        {
+            barrier.srcAccessMask = VkAccessFlags.TransferWrite;
+            barrier.dstAccessMask = VkAccessFlags.ShaderRead;
+            dstStage = VkPipelineStageFlags.FragmentShader;
+        }
+
+        deviceApi.vkCmdPipelineBarrier(cmd, srcStage, dstStage, VkDependencyFlags.None, 0, null, 0, null, 1, &barrier);
+
+        deviceApi.vkEndCommandBuffer(cmd).CheckResult();
+
+        var submitInfo = new VkSubmitInfo
+        {
+            sType = VkStructureType.SubmitInfo,
+            commandBufferCount = 1,
+            pCommandBuffers = &cmd
+        };
+
+        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+
+        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
+    }
+
+    private void CopyBufferToImage(VkBuffer buffer, VkImage image, uint width, uint height)
+    {
+        var allocInfo = new VkCommandBufferAllocateInfo
+        {
+            sType = VkStructureType.CommandBufferAllocateInfo,
+            level = VkCommandBufferLevel.Primary,
+            commandPool = commandPool,
+            commandBufferCount = 1
+        };
+
+        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
+
+        var beginInfo = new VkCommandBufferBeginInfo
+        {
+            sType = VkStructureType.CommandBufferBeginInfo,
+            flags = VkCommandBufferUsageFlags.OneTimeSubmit
+        };
+
+        deviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
+
+        var region = new VkBufferImageCopy
+        {
+            bufferOffset = 0,
+            bufferRowLength = 0,
+            bufferImageHeight = 0,
+            imageSubresource = new VkImageSubresourceLayers
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                mipLevel = 0,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            },
+            imageOffset = new VkOffset3D { x = 0, y = 0, z = 0 },
+            imageExtent = new VkExtent3D { width = width, height = height, depth = 1 },
+        };
+
+        deviceApi.vkCmdCopyBufferToImage(cmd, buffer, image, VkImageLayout.TransferDstOptimal, 1, &region);
+
+        deviceApi.vkEndCommandBuffer(cmd).CheckResult();
+
+        var submitInfo = new VkSubmitInfo
+        {
+            sType = VkStructureType.SubmitInfo,
+            commandBufferCount = 1,
+            pCommandBuffers = &cmd
+        };
+
+        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+
+        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
+    }
+
     private Vector3[] ComputeNormals(Vector3[] positions, uint[] indices)
     {
         var normals = new Vector3[positions.Length];
@@ -1016,22 +1193,66 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return normals;
     }
 
+    private void CreatePrimitiveDescriptorSet(ref Primitive primitive, TextureHandle texture)
+    {
+        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout)
+        {
+            var allocInfo = new VkDescriptorSetAllocateInfo
+            {
+                sType = VkStructureType.DescriptorSetAllocateInfo,
+                descriptorPool = descriptorPool,
+                descriptorSetCount = 1,
+                pSetLayouts = pDescriptorSetLayout,
+            };
+
+            VkDescriptorSet descriptorSet;
+            deviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
+
+            var imageView = textureImageViews[(int)texture.Id];
+            var sampler = textureSamplers[(int)texture.Id];
+
+            var imageInfo = new VkDescriptorImageInfo
+            {
+                sampler = sampler,
+                imageView = imageView,
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
+
+            var writeDescriptorSet = new VkWriteDescriptorSet
+            {
+                sType = VkStructureType.WriteDescriptorSet,
+                dstSet = descriptorSet,
+                dstBinding = 0,
+                dstArrayElement = 0,
+                descriptorCount = 1,
+                descriptorType = VkDescriptorType.CombinedImageSampler,
+                pImageInfo = &imageInfo,
+            };
+
+            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptorSet, 0, null);
+
+            primitive.DescriptorSet = descriptorSet;
+        }
+    }
+
     public MeshHandle LoadMesh(byte[] meshData)
     {
         var model = ModelRoot.ParseGLB(meshData);
-        Console.WriteLine($"Logical Meshes: {model.LogicalMeshes.Count}, Primitives per mesh:");
-
         var primitives = new List<Primitive>();
 
         foreach (var mesh in model.LogicalMeshes)
         {
-            Console.WriteLine($"\tMesh {mesh.Primitives.Count} primitives");
-
             foreach (var primitive in mesh.Primitives)
             {
                 var positions = primitive.GetVertexAccessor("POSITION").AsVector3Array().ToArray();
                 var normals = primitive.GetVertexAccessor("NORMAL")?.AsVector3Array().ToArray() ??
                               ComputeNormals([.. positions], [.. primitive.GetIndices()]);
+
+                var texCoords = primitive.GetVertexAccessor("TEXCOORD_0")?.AsVector2Array().ToArray() ??
+                                [.. Enumerable.Repeat(Vector2.Zero, positions.Length)];
+
+                Console.WriteLine($"First UV: {texCoords[0]}");
+
                 var indices = primitive.GetIndices().ToArray();
 
                 var vertices = new Vertex[positions.Length];
@@ -1041,7 +1262,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                     vertices[i] = new Vertex
                     {
                         Position = positions[i],
-                        Normal = normals[i]
+                        Normal = normals[i],
+                        TexCoord = texCoords[i]
                     };
                 }
 
@@ -1061,14 +1283,47 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 UploadMeshData(MemoryMarshal.AsBytes(indices.AsSpan()), indexBuffer, 0);
 
+                TextureHandle textureHandle = default;
+                if (primitive.Material != null && primitive.Material.FindChannel("BaseColor")?.Texture != null)
+                {
+                    var texture = primitive.Material.FindChannel("BaseColor")?.Texture;
+                    var image = texture.PrimaryImage;
+
+                    var imageData = image.Content.Content.ToArray();
+                    using var img = Image.Load<Rgba32>(imageData);
+                    var pixelBytes = new byte[img.Width * img.Height * 4];
+                    img.CopyPixelDataTo(pixelBytes);
+
+                    var imageWidth = (uint)img.Width;
+                    var imageHeight = (uint)img.Height;
+
+                    textureHandle = LoadTexture(pixelBytes, imageWidth, imageHeight);
+
+                    Console.WriteLine(
+                        $"Loaded texture: ID={textureHandle.Id}, W={imageWidth}, H={imageHeight}");
+                }
+                else
+                {
+                    Console.WriteLine("No texture found for primitive");
+                }
+
                 primitives.Add(new Primitive
                 {
                     VertexBuffer = vertexBuffer,
                     VertexAllocation = vertexAlloc,
                     IndexBuffer = indexBuffer,
                     IndexAllocation = indexAlloc,
-                    IndexCount = (uint)indices.Length
+                    IndexCount = (uint)indices.Length,
+                    TextureHandle = textureHandle,
+                    DescriptorSet = VkDescriptorSet.Null,
                 });
+
+
+                // TODO: Cleanup this is gross
+
+                var prim = primitives[^1];
+                CreatePrimitiveDescriptorSet(ref prim, textureHandle);
+                primitives[^1] = prim;
             }
         }
 
@@ -1080,6 +1335,77 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         meshes.Add(meshObj);
 
         return new MeshHandle((uint)(meshes.Count - 1));
+    }
+
+    public TextureHandle LoadTexture(byte[] imageData, uint width, uint height,
+        VkFormat format = VkFormat.R8G8B8A8Unorm)
+    {
+        var imageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = format,
+            extent = new VkExtent3D { width = width, height = height, depth = 1 },
+            mipLevels = 1,
+            arrayLayers = 1,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.TransferDst | VkImageUsageFlags.Sampled,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice
+        };
+
+        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
+
+        UploadMeshData(imageData, image, width, height, format);
+
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = image,
+            viewType = VkImageViewType.Image2D,
+            format = format,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
+
+        var samplerInfo = new VkSamplerCreateInfo
+        {
+            sType = VkStructureType.SamplerCreateInfo,
+            magFilter = VkFilter.Linear,
+            minFilter = VkFilter.Linear,
+            mipmapMode = VkSamplerMipmapMode.Linear,
+            addressModeU = VkSamplerAddressMode.Repeat,
+            addressModeV = VkSamplerAddressMode.Repeat,
+            addressModeW = VkSamplerAddressMode.Repeat,
+            mipLodBias = 0.0f,
+            anisotropyEnable = false,
+            maxAnisotropy = 1.0f,
+            compareEnable = false,
+            minLod = 0.0f,
+            maxLod = 0.0f,
+        };
+
+        deviceApi.vkCreateSampler(&samplerInfo, null, out var sampler).CheckResult();
+
+        textureImages.Add(image);
+        textureImageViews.Add(imageView);
+        textureSamplers.Add(sampler);
+
+        return new TextureHandle((uint)(textureImages.Count - 1));
     }
 
     private void TransitionDepthImage()
@@ -1147,6 +1473,45 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
     }
+
+    private void CreateDescriptorSetLayout()
+    {
+        var binding = new VkDescriptorSetLayoutBinding
+        {
+            binding = 0,
+            descriptorType = VkDescriptorType.CombinedImageSampler,
+            descriptorCount = 1,
+            stageFlags = VkShaderStageFlags.Fragment
+        };
+
+        var createInfo = new VkDescriptorSetLayoutCreateInfo
+        {
+            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
+            bindingCount = 1,
+            pBindings = &binding
+        };
+
+        deviceApi.vkCreateDescriptorSetLayout(&createInfo, null, out descriptorSetLayout).CheckResult();
+    }
+
+    private void CreateDescriptorPool()
+    {
+        var poolSize = new VkDescriptorPoolSize
+        {
+            type = VkDescriptorType.CombinedImageSampler,
+            descriptorCount = 256,
+        };
+
+        var createInfo = new VkDescriptorPoolCreateInfo
+        {
+            sType = VkStructureType.DescriptorPoolCreateInfo,
+            poolSizeCount = 1,
+            pPoolSizes = &poolSize,
+            maxSets = 256,
+        };
+
+        deviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
+    }
 }
 
 internal struct Primitive
@@ -1156,6 +1521,8 @@ internal struct Primitive
     public VkBuffer IndexBuffer;
     public VmaAllocation IndexAllocation;
     public uint IndexCount;
+    public TextureHandle TextureHandle;
+    public VkDescriptorSet DescriptorSet;
 }
 
 [StructLayout(LayoutKind.Sequential)]

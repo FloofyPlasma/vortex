@@ -9,6 +9,7 @@ internal struct Vertex
 {
     public Vector3 Position;
     public Vector3 Normal;
+    public Vector2 TexCoord;
 }
 
 internal struct Mesh

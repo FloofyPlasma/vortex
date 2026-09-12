@@ -37,6 +37,12 @@ public struct MeshHandle
     internal MeshHandle(uint id) => Id = id;
 }
 
+public struct TextureHandle
+{
+    public uint Id { get; }
+    internal TextureHandle(uint id) => Id = id;
+}
+
 public struct MaterialHandle
 {
     public uint Id { get; }
