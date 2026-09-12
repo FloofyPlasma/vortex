@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Vortice.Vulkan;
+using VortexEngine.Rendering.Vulkan;
 
 namespace VortexEngine.Rendering;
 
@@ -13,9 +13,5 @@ internal struct Vertex
 
 internal struct Mesh
 {
-    public VkBuffer VertexBuffer;
-    public VmaAllocation VertexAllocation;
-    public VkBuffer IndexBuffer;
-    public VmaAllocation IndexAllocation;
-    public uint IndexCount;
+    public List<Primitive> Primitives;
 }

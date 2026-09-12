@@ -83,8 +83,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     {
         foreach (var mesh in meshes)
         {
-            Vma.vmaDestroyBuffer(allocator, mesh.VertexBuffer, mesh.VertexAllocation);
-            Vma.vmaDestroyBuffer(allocator, mesh.IndexBuffer, mesh.IndexAllocation);
+            foreach (var primitive in mesh.Primitives)
+            {
+                Vma.vmaDestroyBuffer(allocator, primitive.VertexBuffer, primitive.VertexAllocation);
+                Vma.vmaDestroyBuffer(allocator, primitive.IndexBuffer, primitive.IndexAllocation);
+            }
         }
 
         deviceApi.vkDestroyImageView(depthImageView, null);
@@ -795,7 +798,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         if (meshes.Count > 0)
         {
             {
-                var model = Matrix4x4.CreateRotationY(rotation);
+                var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
+                            Matrix4x4.CreateScale(15.0f);
 
                 var view = Matrix4x4.CreateLookAt(
                     new Vector3(0, 2, 3),
@@ -820,40 +824,13 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
                     (uint)sizeof(PushConstants), &pushData);
 
-                deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
-                deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
-                deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], mesh.IndexCount, 1, 0, 0, 0);
-            }
-            {
-                var model = Matrix4x4.CreateRotationY(-rotation) * Matrix4x4.CreateRotationX(rotation) *
-                            Matrix4x4.CreateTranslation(0, -2.5f, -2.0f);
-
-                var view = Matrix4x4.CreateLookAt(
-                    new Vector3(0, 2, 3),
-                    Vector3.Zero,
-                    Vector3.UnitY
-                );
-
-                var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-                    MathF.PI / 4.0f,
-                    swapchainExtent.width / (float)swapchainExtent.height,
-                    0.1f,
-                    100.0f
-                );
-
-                var mvp = model * view * projection;
-
-                var mesh = meshes[0];
-                var offset = 0UL;
-                deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
-
-                var pushData = new PushConstants { Mvp = mvp, Model = model };
-                deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
-                    (uint)sizeof(PushConstants), &pushData);
-
-                deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, mesh.VertexBuffer, offset);
-                deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], mesh.IndexBuffer, 0, VkIndexType.Uint32);
-                deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], mesh.IndexCount, 1, 0, 0, 0);
+                foreach (var primitive in mesh.Primitives)
+                {
+                    deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer, offset);
+                    deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], primitive.IndexBuffer, 0,
+                        VkIndexType.Uint32);
+                    deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], primitive.IndexCount, 1, 0, 0, 0);
+                }
             }
         }
         else
@@ -1042,48 +1019,62 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     public MeshHandle LoadMesh(byte[] meshData)
     {
         var model = ModelRoot.ParseGLB(meshData);
-        var mesh = model.LogicalMeshes[0];
-        var primitive = mesh.Primitives[0];
-        Console.WriteLine($"Logical Meshes: {model.LogicalMeshes.Count}, Primitives: {mesh.Primitives.Count}");
+        Console.WriteLine($"Logical Meshes: {model.LogicalMeshes.Count}, Primitives per mesh:");
 
-        var positions = primitive.GetVertexAccessor("POSITION").AsVector3Array().ToArray();
-        var normals = primitive.GetVertexAccessor("NORMAL")?.AsVector3Array().ToArray() ??
-                      ComputeNormals([.. positions], [.. primitive.GetIndices()]);
-        var indices = primitive.GetIndices().ToArray();
+        var primitives = new List<Primitive>();
 
-        var vertices = new Vertex[positions.Length];
-
-        for (var i = 0; i < positions.Length; i++)
+        foreach (var mesh in model.LogicalMeshes)
         {
-            vertices[i] = new Vertex
+            Console.WriteLine($"\tMesh {mesh.Primitives.Count} primitives");
+
+            foreach (var primitive in mesh.Primitives)
             {
-                Position = positions[i],
-                Normal = normals[i]
-            };
+                var positions = primitive.GetVertexAccessor("POSITION").AsVector3Array().ToArray();
+                var normals = primitive.GetVertexAccessor("NORMAL")?.AsVector3Array().ToArray() ??
+                              ComputeNormals([.. positions], [.. primitive.GetIndices()]);
+                var indices = primitive.GetIndices().ToArray();
+
+                var vertices = new Vertex[positions.Length];
+
+                for (var i = 0; i < positions.Length; i++)
+                {
+                    vertices[i] = new Vertex
+                    {
+                        Position = positions[i],
+                        Normal = normals[i]
+                    };
+                }
+
+                var vertexBuffer = CreateBuffer(
+                    (ulong)(vertices.Length * sizeof(Vertex)),
+                    VkBufferUsageFlags.VertexBuffer | VkBufferUsageFlags.TransferDst,
+                    VmaMemoryUsage.AutoPreferDevice,
+                    out var vertexAlloc
+                );
+
+                UploadMeshData(MemoryMarshal.AsBytes(vertices.AsSpan()), vertexBuffer, 0);
+
+                var indexBuffer = CreateBuffer(
+                    (ulong)(indices.Length * sizeof(uint)),
+                    VkBufferUsageFlags.IndexBuffer | VkBufferUsageFlags.TransferDst,
+                    VmaMemoryUsage.AutoPreferDevice, out var indexAlloc);
+
+                UploadMeshData(MemoryMarshal.AsBytes(indices.AsSpan()), indexBuffer, 0);
+
+                primitives.Add(new Primitive
+                {
+                    VertexBuffer = vertexBuffer,
+                    VertexAllocation = vertexAlloc,
+                    IndexBuffer = indexBuffer,
+                    IndexAllocation = indexAlloc,
+                    IndexCount = (uint)indices.Length
+                });
+            }
         }
-
-        var vertexBuffer = CreateBuffer(
-            (ulong)(vertices.Length * sizeof(Vertex)),
-            VkBufferUsageFlags.VertexBuffer | VkBufferUsageFlags.TransferDst,
-            VmaMemoryUsage.AutoPreferDevice,
-            out var vertexAlloc
-        );
-
-        UploadMeshData(MemoryMarshal.AsBytes(vertices.AsSpan()), vertexBuffer, 0);
-
-        var indexBuffer = CreateBuffer(
-            (ulong)(indices.Length * sizeof(uint)), VkBufferUsageFlags.IndexBuffer | VkBufferUsageFlags.TransferDst,
-            VmaMemoryUsage.AutoPreferDevice, out var indexAlloc);
-
-        UploadMeshData(MemoryMarshal.AsBytes(indices.AsSpan()), indexBuffer, 0);
 
         var meshObj = new Mesh
         {
-            VertexBuffer = vertexBuffer,
-            VertexAllocation = vertexAlloc,
-            IndexBuffer = indexBuffer,
-            IndexAllocation = indexAlloc,
-            IndexCount = (uint)indices.Length,
+            Primitives = primitives,
         };
 
         meshes.Add(meshObj);
@@ -1156,6 +1147,15 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
     }
+}
+
+internal struct Primitive
+{
+    public VkBuffer VertexBuffer;
+    public VmaAllocation VertexAllocation;
+    public VkBuffer IndexBuffer;
+    public VmaAllocation IndexAllocation;
+    public uint IndexCount;
 }
 
 [StructLayout(LayoutKind.Sequential)]
