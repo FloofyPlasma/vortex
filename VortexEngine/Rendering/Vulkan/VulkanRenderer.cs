@@ -1015,12 +1015,13 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         if (meshes.Count > 0)
         {
             {
-                var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
-                            Matrix4x4.CreateScale(1.0f);
+                // var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
+                // Matrix4x4.CreateScale(1.0f);
 
+                var model = Matrix4x4.CreateScale(0.5f) * Matrix4x4.CreateRotationX(MathF.PI);
 
                 var view = Matrix4x4.CreateLookAt(
-                    new Vector3(0, 2, 3),
+                    new Vector3(0, 15, 10),
                     Vector3.Zero,
                     Vector3.UnitY
                 );
@@ -1044,7 +1045,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 var frameConstants = new FrameConstants
                 {
-                    CameraPos = new Vector4(0, 2, 3, 0),
+                    CameraPos = new Vector4(0, 15, 10, 0),
                     DirectionalLight = new Vector4(0, -2.5f, -3.5f, 2),
                     DirectionalColor = new Vector4(0.8f, 0.8f, 0.8f, 0),
                     AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f),
@@ -2110,54 +2111,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 levelCount = 1,
                 baseArrayLayer = 0,
                 layerCount = 6,
-            }
-        };
-
-        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
-        return imageView;
-    }
-
-    private VkImage CreateCubemapFaceImage(uint size, VkFormat format)
-    {
-        var imageInfo = new VkImageCreateInfo
-        {
-            sType = VkStructureType.ImageCreateInfo,
-            imageType = VkImageType.Image2D,
-            format = format,
-            extent = new VkExtent3D { width = size, height = size, depth = 1 },
-            mipLevels = 1,
-            arrayLayers = 1,
-            samples = VkSampleCountFlags.Count1,
-            tiling = VkImageTiling.Optimal,
-            usage = VkImageUsageFlags.Storage | VkImageUsageFlags.Sampled,
-            sharingMode = VkSharingMode.Exclusive,
-            initialLayout = VkImageLayout.Undefined,
-        };
-
-        var allocInfo = new VmaAllocationCreateInfo
-        {
-            usage = VmaMemoryUsage.AutoPreferDevice
-        };
-
-        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
-        return image;
-    }
-
-    private VkImageView CreateCubemapFaceView(VkImage image, VkFormat format)
-    {
-        var viewInfo = new VkImageViewCreateInfo
-        {
-            sType = VkStructureType.ImageViewCreateInfo,
-            image = image,
-            viewType = VkImageViewType.Image2D,
-            format = format,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = 0,
-                layerCount = 1,
             }
         };
 
