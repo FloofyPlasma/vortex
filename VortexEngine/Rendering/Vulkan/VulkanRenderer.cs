@@ -876,9 +876,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 var frameConstants = new FrameConstants
                 {
                     CameraPos = new Vector4(0, 2, 3, 0),
-                    DirectionalLight = new Vector4(0, -2, -3, 1),
+                    DirectionalLight = new Vector4(0, -2, -3, 4),
                     DirectionalColor = new Vector4(1, 1, 1, 1),
-                    AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f),
+                    AmbientColor = new Vector4(0.34f, 0.35f, 0.35f, 0.35f),
                     DebugMode = 0, // 0 = full PBR, 1 = metallic, 2 = roughness, 3 = normal, 4 = AO
                 };
 
