@@ -77,7 +77,6 @@ void main()
     vec2 metallicRoughness = texture(metallicRoughnessTexture, fs_in.texCoord).bg;
     float metallic = metallicRoughness.x;
     float roughness = metallicRoughness.y;
-    //    roughness = max(roughness, 0.001);  // Clamp to avoid specular artifacts
 
     float ao = texture(occlusionTexture, fs_in.texCoord).r;
 
