@@ -1242,7 +1242,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             VkDescriptorSet descriptorSet;
             deviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
 
-            var imageInfos = stackalloc VkDescriptorImageInfo[4];
+            var imageInfos = stackalloc VkDescriptorImageInfo[5];
 
             imageInfos[0] = new VkDescriptorImageInfo
             {
@@ -1272,9 +1272,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
             };
 
-            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[4];
+            imageInfos[4] = new VkDescriptorImageInfo
+            {
+                sampler = textureSamplers[(int)material.Emissive.Id],
+                imageView = textureImageViews[(int)material.Emissive.Id],
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
 
-            for (var i = 0; i < 4; i++)
+            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[5];
+
+            for (var i = 0; i < 5; i++)
             {
                 writeDescriptorSets[i] = new VkWriteDescriptorSet
                 {
@@ -1288,7 +1295,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 };
             }
 
-            deviceApi.vkUpdateDescriptorSets(4, writeDescriptorSets, 0, null);
+            deviceApi.vkUpdateDescriptorSets(5, writeDescriptorSets, 0, null);
 
             primitive.DescriptorSet = descriptorSet;
         }
@@ -1395,6 +1402,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                                         ?? LoadDefaultTexture(new Vector4(0, 1, 0, 0)),
                     Occlusion = LoadMaterialTexture(primitive.Material, "Occlusion")
                                 ?? LoadDefaultTexture(Vector4.One),
+                    Emissive = LoadMaterialTexture(primitive.Material, "Emissive")
+                               ?? LoadDefaultTexture(Vector4.Zero),
                 };
 
                 var prim = new Primitive
@@ -1561,9 +1570,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateDescriptorSetLayout()
     {
-        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[4];
+        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[5];
 
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < 5; i++)
         {
             set0Bindings[i] = new VkDescriptorSetLayoutBinding
             {
@@ -1577,7 +1586,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var set0Info = new VkDescriptorSetLayoutCreateInfo
         {
             sType = VkStructureType.DescriptorSetLayoutCreateInfo,
-            bindingCount = 4,
+            bindingCount = 5,
             pBindings = set0Bindings
         };
 
@@ -1751,6 +1760,7 @@ public struct Material
     public TextureHandle Normal;
     public TextureHandle MetallicRoughness;
     public TextureHandle Occlusion;
+    public TextureHandle Emissive;
 }
 
 internal struct Primitive

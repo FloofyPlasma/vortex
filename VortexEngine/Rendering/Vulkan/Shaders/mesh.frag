@@ -4,6 +4,7 @@ layout (set = 0, binding = 0) uniform sampler2D albedoTexture;
 layout (set = 0, binding = 1) uniform sampler2D normalTexture;
 layout (set = 0, binding = 2) uniform sampler2D metallicRoughnessTexture;
 layout (set = 0, binding = 3) uniform sampler2D occlusionTexture;
+layout (set = 0, binding = 4) uniform sampler2D emissiveTexture;
 
 layout (set = 1, binding = 0) uniform FrameConstants {
     vec4 cameraPos;
@@ -122,7 +123,8 @@ void main()
     // Ambient
     vec3 ambient = frame.ambientColor.rgb * frame.ambientColor.w * albedo * ao;
 
-    vec3 color = ambient + Lo;
+    vec3 emissive = texture(emissiveTexture, fs_in.texCoord).rgb;
+    vec3 color = ambient + Lo + emissive;
 
     // Tone mapping (Reinhard)
     color = color / (color + vec3(1.0));
