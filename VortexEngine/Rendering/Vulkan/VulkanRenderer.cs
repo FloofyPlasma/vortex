@@ -847,7 +847,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         {
             {
                 var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
-                            Matrix4x4.CreateScale(15.0f);
+                            Matrix4x4.CreateScale(1.0f);
 
 
                 var view = Matrix4x4.CreateLookAt(

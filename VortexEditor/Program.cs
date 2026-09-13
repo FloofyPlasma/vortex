@@ -16,7 +16,7 @@ internal class Program
         {
             engine.Initialize(window);
 
-            var meshBytes = File.ReadAllBytes("VortexEditor/Assets/PotOfCoals.glb");
+            var meshBytes = File.ReadAllBytes("VortexEditor/Assets/DamagedHelmet.glb");
             var meshHandle = engine.Renderer.LoadMesh(meshBytes);
 
             var clock = Stopwatch.StartNew();
