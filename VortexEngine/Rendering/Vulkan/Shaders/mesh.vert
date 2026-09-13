@@ -4,18 +4,21 @@ layout (location = 0) in vec3 inPosition;
 layout (location = 1) in vec3 inNormal;
 layout (location = 2) in vec2 inTexCoord;
 
-layout (location = 0) out vec3 fragNormal;
-layout (location = 1) out vec3 fragPos;
-layout (location = 2) out vec2 fragTexCoord;
+layout (location = 0) out VS_OUT {
+    vec3 position;
+    vec2 texCoord;
+    vec3 normal;
+} vs_out;
 
 layout (push_constant) uniform PushConstants {
     mat4 mvp;
     mat4 model;
-} pc;
+} pushConstants;
 
 void main() {
-    gl_Position = pc.mvp * vec4(inPosition, 1.0);
-    fragNormal = normalize(mat3(pc.model) * inNormal);
-    fragPos = (pc.model * vec4(inPosition, 1.0)).xyz;
-    fragTexCoord = inTexCoord;
+    vs_out.position = (pushConstants.model * vec4(inPosition, 1.0)).xyz;
+    vs_out.texCoord = inTexCoord;
+    vs_out.normal = normalize((pushConstants.model * vec4(inNormal, 0.0)).xyz);
+
+    gl_Position = pushConstants.mvp * vec4(inPosition, 1.0);
 }

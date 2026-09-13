@@ -25,9 +25,14 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkImageView depthImageView;
 
     private VkDescriptorPool descriptorPool;
-    private VkDescriptorSetLayout descriptorSetLayout;
+    private VkDescriptorSetLayout descriptorSetLayout0;
+    private VkDescriptorSetLayout descriptorSetLayout1;
     private VkDevice device;
     private VkDeviceApi deviceApi = default!;
+    private VmaAllocation frameConstantAllocation;
+
+    private VkBuffer frameConstantBuffer;
+    private VkDescriptorSet frameDescriptorSet;
 
     private VkQueue graphicsQueue;
 
@@ -81,6 +86,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateShaders();
         CreateDescriptorSetLayout();
         CreateDescriptorPool();
+        CreateFrameConstantBuffer();
+        CreateFrameDescriptorSet();
         CreatePipelineLayout();
         CreateTriangleGraphicsPipeline();
         CreateMeshGraphicsPipeline();
@@ -104,9 +111,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         deviceApi.vkDestroyImageView(depthImageView, null);
 
         deviceApi.vkDestroyDescriptorPool(descriptorPool, null);
-        deviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout, null);
+        deviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
 
         Vma.vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+        Vma.vmaDestroyBuffer(allocator, frameConstantBuffer, frameConstantAllocation);
 
         Vma.vmaDestroyAllocator(allocator);
     }
@@ -351,6 +359,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreatePipelineLayout()
     {
+        var layouts = stackalloc VkDescriptorSetLayout[2];
+        layouts[0] = descriptorSetLayout0;
+        layouts[1] = descriptorSetLayout1;
+
         var pushConstantRange = new VkPushConstantRange
         {
             stageFlags = VkShaderStageFlags.Vertex,
@@ -358,19 +370,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             size = (uint)sizeof(Matrix4x4) * 2
         };
 
-        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout)
+        var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
         {
-            var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
-            {
-                sType = VkStructureType.PipelineLayoutCreateInfo,
-                setLayoutCount = 1,
-                pSetLayouts = pDescriptorSetLayout,
-                pushConstantRangeCount = 1,
-                pPushConstantRanges = &pushConstantRange,
-            };
+            sType = VkStructureType.PipelineLayoutCreateInfo,
+            setLayoutCount = 2,
+            pSetLayouts = layouts,
+            pushConstantRangeCount = 1,
+            pPushConstantRanges = &pushConstantRange,
+        };
 
-            deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
-        }
+        deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
     }
 
     private void CreateTriangleGraphicsPipeline()
@@ -856,6 +865,23 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
                     (uint)sizeof(PushConstants), &pushData);
 
+                var frameConstants = new FrameConstants
+                {
+                    CameraPos = new Vector4(0, 2, 3, 0),
+                    DirectionalLight = new Vector4(-0.5f, -0.8f, -0.3f, 1),
+                    DirectionalColor = new Vector4(1, 1, 1, 1),
+                    AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f),
+                    DebugMode = 0, // 0 = full PBR, 1 = metallic, 2 = roughness, 3 = normal, 4 = AO
+                };
+
+                UploadFrameConstants(frameConstants);
+
+                fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
+                {
+                    deviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                        pipelineLayout, 1, 1, pFrameDescriptorSet, 0, null);
+                }
+
                 foreach (var primitive in mesh.Primitives)
                 {
                     deviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
@@ -1193,9 +1219,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return normals;
     }
 
-    private void CreatePrimitiveDescriptorSet(ref Primitive primitive, TextureHandle texture)
+    private void CreatePrimitiveDescriptorSet(ref Primitive primitive, Material material)
     {
-        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout)
+        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout0)
         {
             var allocInfo = new VkDescriptorSetAllocateInfo
             {
@@ -1208,30 +1234,96 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             VkDescriptorSet descriptorSet;
             deviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
 
-            var imageView = textureImageViews[(int)texture.Id];
-            var sampler = textureSamplers[(int)texture.Id];
+            var imageInfos = stackalloc VkDescriptorImageInfo[4];
 
-            var imageInfo = new VkDescriptorImageInfo
+            imageInfos[0] = new VkDescriptorImageInfo
             {
-                sampler = sampler,
-                imageView = imageView,
+                sampler = textureSamplers[(int)material.Albedo.Id],
+                imageView = textureImageViews[(int)material.Albedo.Id],
                 imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
             };
 
-            var writeDescriptorSet = new VkWriteDescriptorSet
+            imageInfos[1] = new VkDescriptorImageInfo
             {
-                sType = VkStructureType.WriteDescriptorSet,
-                dstSet = descriptorSet,
-                dstBinding = 0,
-                dstArrayElement = 0,
-                descriptorCount = 1,
-                descriptorType = VkDescriptorType.CombinedImageSampler,
-                pImageInfo = &imageInfo,
+                sampler = textureSamplers[(int)material.Normal.Id],
+                imageView = textureImageViews[(int)material.Normal.Id],
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
             };
 
-            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptorSet, 0, null);
+            imageInfos[2] = new VkDescriptorImageInfo
+            {
+                sampler = textureSamplers[(int)material.MetallicRoughness.Id],
+                imageView = textureImageViews[(int)material.MetallicRoughness.Id],
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
+
+            imageInfos[3] = new VkDescriptorImageInfo
+            {
+                sampler = textureSamplers[(int)material.Occlusion.Id],
+                imageView = textureImageViews[(int)material.Occlusion.Id],
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
+
+            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[4];
+
+            for (var i = 0; i < 4; i++)
+            {
+                writeDescriptorSets[i] = new VkWriteDescriptorSet
+                {
+                    sType = VkStructureType.WriteDescriptorSet,
+                    dstSet = descriptorSet,
+                    dstBinding = (uint)i,
+                    dstArrayElement = 0,
+                    descriptorCount = 1,
+                    descriptorType = VkDescriptorType.CombinedImageSampler,
+                    pImageInfo = &imageInfos[i],
+                };
+            }
+
+            deviceApi.vkUpdateDescriptorSets(4, writeDescriptorSets, 0, null);
 
             primitive.DescriptorSet = descriptorSet;
+        }
+    }
+
+    private TextureHandle LoadDefaultTexture(Vector4 color)
+    {
+        var r = (byte)(color.X * 255);
+        var g = (byte)(color.Y * 255);
+        var b = (byte)(color.Z * 255);
+        var a = (byte)(color.W * 255);
+
+        byte[] pixelData = [r, g, b, a];
+
+        return LoadTexture(pixelData, 1, 1, VkFormat.R8G8B8A8Unorm);
+    }
+
+    private TextureHandle? LoadMaterialTexture(SharpGLTF.Schema2.Material material, string channelName)
+    {
+        if (material == null) return null;
+
+        var textureInfo = material.FindChannel(channelName)?.Texture;
+        if (textureInfo == null) return null;
+
+        var image = textureInfo.PrimaryImage;
+        if (image == null) return null;
+
+        try
+        {
+            var imageData = image.Content.Content.ToArray();
+            using var img = Image.Load<Rgba32>(imageData);
+            var pixelBytes = new byte[img.Width * img.Height * 4];
+            img.CopyPixelDataTo(pixelBytes);
+
+            var imageWidth = (uint)img.Width;
+            var imageHeight = (uint)img.Height;
+
+            return LoadTexture(pixelBytes, imageWidth, imageHeight);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to load texture for channel {channelName}: {ex.Message}");
+            return null;
         }
     }
 
@@ -1251,12 +1343,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 var texCoords = primitive.GetVertexAccessor("TEXCOORD_0")?.AsVector2Array().ToArray() ??
                                 [.. Enumerable.Repeat(Vector2.Zero, positions.Length)];
 
-                Console.WriteLine($"First UV: {texCoords[0]}");
-
                 var indices = primitive.GetIndices().ToArray();
 
                 var vertices = new Vertex[positions.Length];
-
                 for (var i = 0; i < positions.Length; i++)
                 {
                     vertices[i] = new Vertex
@@ -1279,59 +1368,43 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 var indexBuffer = CreateBuffer(
                     (ulong)(indices.Length * sizeof(uint)),
                     VkBufferUsageFlags.IndexBuffer | VkBufferUsageFlags.TransferDst,
-                    VmaMemoryUsage.AutoPreferDevice, out var indexAlloc);
+                    VmaMemoryUsage.AutoPreferDevice,
+                    out var indexAlloc);
 
                 UploadMeshData(MemoryMarshal.AsBytes(indices.AsSpan()), indexBuffer, 0);
 
-                TextureHandle textureHandle = default;
-                if (primitive.Material != null && primitive.Material.FindChannel("BaseColor")?.Texture != null)
+                var material = new Material
                 {
-                    var texture = primitive.Material.FindChannel("BaseColor")?.Texture;
-                    var image = texture.PrimaryImage;
+                    Albedo = LoadMaterialTexture(primitive.Material, "BaseColor")
+                             ?? LoadDefaultTexture(Vector4.One),
+                    Normal = LoadMaterialTexture(primitive.Material, "Normal")
+                             ?? LoadDefaultTexture(new Vector4(0.5f, 0.5f, 1, 1)),
+                    MetallicRoughness = LoadMaterialTexture(primitive.Material, "MetallicRoughness")
+                                        ?? LoadDefaultTexture(new Vector4(0, 1, 0, 0)),
+                    Occlusion = LoadMaterialTexture(primitive.Material, "Occlusion")
+                                ?? LoadDefaultTexture(Vector4.One),
+                };
 
-                    var imageData = image.Content.Content.ToArray();
-                    using var img = Image.Load<Rgba32>(imageData);
-                    var pixelBytes = new byte[img.Width * img.Height * 4];
-                    img.CopyPixelDataTo(pixelBytes);
-
-                    var imageWidth = (uint)img.Width;
-                    var imageHeight = (uint)img.Height;
-
-                    textureHandle = LoadTexture(pixelBytes, imageWidth, imageHeight);
-
-                    Console.WriteLine(
-                        $"Loaded texture: ID={textureHandle.Id}, W={imageWidth}, H={imageHeight}");
-                }
-                else
-                {
-                    Console.WriteLine("No texture found for primitive");
-                }
-
-                primitives.Add(new Primitive
+                var prim = new Primitive
                 {
                     VertexBuffer = vertexBuffer,
                     VertexAllocation = vertexAlloc,
                     IndexBuffer = indexBuffer,
                     IndexAllocation = indexAlloc,
                     IndexCount = (uint)indices.Length,
-                    TextureHandle = textureHandle,
+                    Material = material,
                     DescriptorSet = VkDescriptorSet.Null,
-                });
+                };
 
+                primitives.Add(prim);
 
-                // TODO: Cleanup this is gross
-
-                var prim = primitives[^1];
-                CreatePrimitiveDescriptorSet(ref prim, textureHandle);
+                prim = primitives[^1];
+                CreatePrimitiveDescriptorSet(ref prim, material);
                 primitives[^1] = prim;
             }
         }
 
-        var meshObj = new Mesh
-        {
-            Primitives = primitives,
-        };
-
+        var meshObj = new Mesh { Primitives = primitives };
         meshes.Add(meshObj);
 
         return new MeshHandle((uint)(meshes.Count - 1));
@@ -1476,22 +1549,44 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateDescriptorSetLayout()
     {
-        var binding = new VkDescriptorSetLayoutBinding
+        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[4];
+
+        for (var i = 0; i < 4; i++)
+        {
+            set0Bindings[i] = new VkDescriptorSetLayoutBinding
+            {
+                binding = (uint)i,
+                descriptorType = VkDescriptorType.CombinedImageSampler,
+                descriptorCount = 1,
+                stageFlags = VkShaderStageFlags.Fragment
+            };
+        }
+
+        var set0Info = new VkDescriptorSetLayoutCreateInfo
+        {
+            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
+            bindingCount = 4,
+            pBindings = set0Bindings
+        };
+
+        deviceApi.vkCreateDescriptorSetLayout(&set0Info, null, out descriptorSetLayout0).CheckResult();
+
+        var set1Binding = new VkDescriptorSetLayoutBinding
         {
             binding = 0,
-            descriptorType = VkDescriptorType.CombinedImageSampler,
+            descriptorType = VkDescriptorType.UniformBuffer,
             descriptorCount = 1,
             stageFlags = VkShaderStageFlags.Fragment
         };
 
-        var createInfo = new VkDescriptorSetLayoutCreateInfo
+        var set1Info = new VkDescriptorSetLayoutCreateInfo
         {
             sType = VkStructureType.DescriptorSetLayoutCreateInfo,
             bindingCount = 1,
-            pBindings = &binding
+            pBindings = &set1Binding
         };
 
-        deviceApi.vkCreateDescriptorSetLayout(&createInfo, null, out descriptorSetLayout).CheckResult();
+        deviceApi.vkCreateDescriptorSetLayout(&set1Info, null, out descriptorSetLayout1).CheckResult();
     }
 
     private void CreateDescriptorPool()
@@ -1512,6 +1607,69 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
     }
+
+    private void CreateFrameConstantBuffer()
+    {
+        frameConstantBuffer = CreateBuffer(
+            (ulong)sizeof(FrameConstants),
+            VkBufferUsageFlags.UniformBuffer,
+            VmaMemoryUsage.AutoPreferHost,
+            out frameConstantAllocation
+        );
+    }
+
+    private void CreateFrameDescriptorSet()
+    {
+        fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
+        fixed (VkDescriptorSetLayout* pDescriptorSetLayout1 = &descriptorSetLayout1)
+        {
+            var allocInfo = new VkDescriptorSetAllocateInfo
+            {
+                sType = VkStructureType.DescriptorSetAllocateInfo,
+                descriptorPool = descriptorPool,
+                descriptorSetCount = 1,
+                pSetLayouts = pDescriptorSetLayout1,
+            };
+
+            deviceApi.vkAllocateDescriptorSets(&allocInfo, pFrameDescriptorSet).CheckResult();
+
+            var bufferInfo = new VkDescriptorBufferInfo
+            {
+                buffer = frameConstantBuffer,
+                offset = 0,
+                range = (ulong)sizeof(FrameConstants),
+            };
+
+            var writeDescriptorSet = new VkWriteDescriptorSet
+            {
+                sType = VkStructureType.WriteDescriptorSet,
+                dstSet = frameDescriptorSet,
+                dstBinding = 0,
+                dstArrayElement = 0,
+                descriptorCount = 1,
+                descriptorType = VkDescriptorType.UniformBuffer,
+                pBufferInfo = &bufferInfo,
+            };
+
+            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptorSet, 0, null);
+        }
+    }
+
+    private void UploadFrameConstants(FrameConstants constants)
+    {
+        void* mapped = null;
+        Vma.vmaMapMemory(allocator, frameConstantAllocation, &mapped).CheckResult();
+        *(FrameConstants*)mapped = constants;
+        Vma.vmaUnmapMemory(allocator, frameConstantAllocation);
+    }
+}
+
+public struct Material
+{
+    public TextureHandle Albedo;
+    public TextureHandle Normal;
+    public TextureHandle MetallicRoughness;
+    public TextureHandle Occlusion;
 }
 
 internal struct Primitive
@@ -1521,8 +1679,19 @@ internal struct Primitive
     public VkBuffer IndexBuffer;
     public VmaAllocation IndexAllocation;
     public uint IndexCount;
-    public TextureHandle TextureHandle;
+    public Material Material;
     public VkDescriptorSet DescriptorSet;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+struct FrameConstants
+{
+    public Vector4 CameraPos;
+    public Vector4 DirectionalLight;
+    public Vector4 DirectionalColor;
+    public Vector4 AmbientColor;
+    public uint DebugMode;
+    public uint _pad1, _pad2, _pad3;
 }
 
 [StructLayout(LayoutKind.Sequential)]
