@@ -15,9 +15,20 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 {
     private const int MaxFramesInFlight = 2;
     private VmaAllocator allocator;
+    private VkImage brdfLUTImage;
+    private VkImageView brdfLUTImageView;
+    private VkSampler brdfLUTSampler;
+    private VkDescriptorSetLayout brdfLutDescriptorLayout;
+    private VkPipeline brdfLutPipeline;
+    private VkPipelineLayout brdfLutPipelineLayout;
+
+    private VkShaderModule brdfLutShader;
     private VkCommandBuffer[] commandBuffers = null!;
 
     private VkCommandPool commandPool;
+    private VkSampler cubemapSampler;
+
+    private List<CubemapData> cubemapTextures = [];
     private int currentFrame = 0;
 
     private VkImage depthImage;
@@ -29,6 +40,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkDescriptorSetLayout descriptorSetLayout1;
     private VkDevice device;
     private VkDeviceApi deviceApi = default!;
+    private VkDescriptorSetLayout equirectToCubemapDescriptorLayout;
+
+    private VkPipeline equirectToCubemapPipeline;
+    private VkPipelineLayout equirectToCubemapPipelineLayout;
+    private VkShaderModule equirectToCubemapShader;
     private VmaAllocation frameConstantAllocation;
 
     private VkBuffer frameConstantBuffer;
@@ -42,7 +58,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private VkFence[] inFlightFences = null!;
     private VkInstance instance;
-    private VkInstanceApi instanceApi = default!;
+    private VkInstanceApi instanceApi = null!;
     private VkShaderModule meshFragmentShader;
     private VkPipeline meshPipeline;
     private VkShaderModule meshVertexShader;
@@ -84,6 +100,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateAllocator();
         CreateSwapchain(width, height);
         CreateShaders();
+        CreateEquirectToCubemapPipeline();
+        CreateCubemapSamplers();
+        CreateBRDFLUTPipeline();
         CreateDescriptorSetLayout();
         CreateDescriptorPool();
         CreateFrameConstantBuffer();
@@ -95,6 +114,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         TransitionDepthImage();
         CreateCommandBuffers();
         CreateSyncPrimitives();
+        GenerateBRDFLUT();
     }
 
     public void Dispose()
@@ -112,6 +132,28 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         deviceApi.vkDestroyDescriptorPool(descriptorPool, null);
         deviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
+
+        foreach (var cubemap in cubemapTextures)
+        {
+            for (var i = 0; i < 6; i++)
+            {
+                deviceApi.vkDestroyImageView(cubemap.Views[i], null);
+                Vma.vmaDestroyImage(allocator, cubemap.Images[i], VmaAllocation.Null);
+            }
+        }
+
+        deviceApi.vkDestroySampler(cubemapSampler, null);
+        deviceApi.vkDestroySampler(brdfLUTSampler, null);
+
+        if (brdfLUTImageView.Handle != 0)
+        {
+            deviceApi.vkDestroyImageView(brdfLUTImageView, null);
+        }
+
+        if (brdfLUTImage.Handle != 0)
+        {
+            Vma.vmaDestroyImage(allocator, brdfLUTImage, VmaAllocation.Null);
+        }
 
         Vma.vmaDestroyImage(allocator, depthImage, depthImageAllocation);
         Vma.vmaDestroyBuffer(allocator, frameConstantBuffer, frameConstantAllocation);
@@ -355,6 +397,13 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var meshFragmentCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/mesh.frag",
             ShaderKind.FragmentShader);
         meshFragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, meshFragmentCode, "mesh.frag");
+
+        var equirectToCubemapCode = ShaderCompiler.LoadAndCompileGlsl(
+            "VortexEngine/Rendering/Vulkan/Shaders/equirectangular_to_cubemap.comp", ShaderKind.ComputeShader);
+        equirectToCubemapShader = ShaderCompiler.CreateShaderModule(deviceApi, equirectToCubemapCode);
+        var brdfLutCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/brdf_lut.comp",
+            ShaderKind.ComputeShader);
+        brdfLutShader = ShaderCompiler.CreateShaderModule(deviceApi, brdfLutCode, "brdf_lut.comp");
     }
 
     private void CreatePipelineLayout()
@@ -730,6 +779,126 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
             meshPipeline = pipelines[0];
         }
+    }
+
+    private void CreateEquirectToCubemapPipeline()
+    {
+        var layoutBindings = stackalloc VkDescriptorSetLayoutBinding[2];
+
+        layoutBindings[0] = new VkDescriptorSetLayoutBinding
+        {
+            binding = 0,
+            descriptorType = VkDescriptorType.CombinedImageSampler,
+            descriptorCount = 1,
+            stageFlags = VkShaderStageFlags.Compute,
+        };
+
+        layoutBindings[1] = new VkDescriptorSetLayoutBinding
+        {
+            binding = 1,
+            descriptorType = VkDescriptorType.StorageImage,
+            descriptorCount = 1,
+            stageFlags = VkShaderStageFlags.Compute,
+        };
+
+        var layoutInfo = new VkDescriptorSetLayoutCreateInfo
+        {
+            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
+            bindingCount = 2,
+            pBindings = layoutBindings
+        };
+
+        deviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out var computeDescriptorLayout).CheckResult();
+
+        var pushConstantRange = new VkPushConstantRange
+        {
+            stageFlags = VkShaderStageFlags.Compute,
+            offset = 0,
+            size = (uint)sizeof(int),
+        };
+
+        var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
+        {
+            sType = VkStructureType.PipelineLayoutCreateInfo,
+            setLayoutCount = 1,
+            pSetLayouts = &computeDescriptorLayout,
+            pushConstantRangeCount = 1,
+            pPushConstantRanges = &pushConstantRange
+        };
+
+        deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out var computePipelineLayout).CheckResult();
+
+        VkUtf8String pComputeShaderStageName = "main"u8;
+        var shaderStageInfo = new VkPipelineShaderStageCreateInfo
+        {
+            sType = VkStructureType.PipelineShaderStageCreateInfo,
+            stage = VkShaderStageFlags.Compute,
+            module = equirectToCubemapShader,
+            pName = pComputeShaderStageName
+        };
+
+        var pipelineInfo = new VkComputePipelineCreateInfo
+        {
+            sType = VkStructureType.ComputePipelineCreateInfo,
+            layout = computePipelineLayout,
+            stage = shaderStageInfo,
+        };
+
+        deviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out equirectToCubemapPipeline)
+            .CheckResult();
+        equirectToCubemapDescriptorLayout = computeDescriptorLayout;
+        equirectToCubemapPipelineLayout = computePipelineLayout;
+    }
+
+    private void CreateBRDFLUTPipeline()
+    {
+        var layoutBinding = new VkDescriptorSetLayoutBinding
+        {
+            binding = 0,
+            descriptorType = VkDescriptorType.StorageImage,
+            descriptorCount = 1,
+            stageFlags = VkShaderStageFlags.Compute,
+        };
+
+        var layoutInfo = new VkDescriptorSetLayoutCreateInfo
+        {
+            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
+            bindingCount = 1,
+            pBindings = &layoutBinding
+        };
+
+        deviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out brdfLutDescriptorLayout).CheckResult();
+
+        fixed (VkDescriptorSetLayout* pBrdfLutDescriptorLayout = &brdfLutDescriptorLayout)
+        {
+            var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
+            {
+                sType = VkStructureType.PipelineLayoutCreateInfo,
+                setLayoutCount = 1,
+                pSetLayouts = pBrdfLutDescriptorLayout,
+            };
+
+            deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out brdfLutPipelineLayout).CheckResult();
+        }
+
+        VkUtf8String pComputeShaderStageName = "main"u8;
+        var shaderStageInfo = new VkPipelineShaderStageCreateInfo
+        {
+            sType = VkStructureType.PipelineShaderStageCreateInfo,
+            stage = VkShaderStageFlags.Compute,
+            module = brdfLutShader,
+            pName = pComputeShaderStageName
+        };
+
+        var pipelineInfo = new VkComputePipelineCreateInfo
+        {
+            sType = VkStructureType.ComputePipelineCreateInfo,
+            layout = brdfLutPipelineLayout,
+            stage = shaderStageInfo,
+        };
+
+        deviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out brdfLutPipeline)
+            .CheckResult();
     }
 
     private void CreateCommandPool()
@@ -1242,7 +1411,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             VkDescriptorSet descriptorSet;
             deviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
 
-            var imageInfos = stackalloc VkDescriptorImageInfo[5];
+            var imageInfos = stackalloc VkDescriptorImageInfo[7];
 
             imageInfos[0] = new VkDescriptorImageInfo
             {
@@ -1279,9 +1448,23 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
             };
 
-            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[5];
+            imageInfos[5] = new VkDescriptorImageInfo
+            {
+                sampler = cubemapSampler,
+                imageView = cubemapTextures[0].Views[0],
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
 
-            for (var i = 0; i < 5; i++)
+            imageInfos[6] = new VkDescriptorImageInfo
+            {
+                sampler = brdfLUTSampler,
+                imageView = brdfLUTImageView,
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
+
+            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[7];
+
+            for (var i = 0; i < 7; i++)
             {
                 writeDescriptorSets[i] = new VkWriteDescriptorSet
                 {
@@ -1295,7 +1478,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 };
             }
 
-            deviceApi.vkUpdateDescriptorSets(5, writeDescriptorSets, 0, null);
+            deviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
+
+            Console.WriteLine($"Binding cubemap: ID={0}, View={cubemapTextures[0].Views[0].Handle}");
+            Console.WriteLine($"Binding BRDF LUT: View={brdfLUTImageView.Handle}");
 
             primitive.DescriptorSet = descriptorSet;
         }
@@ -1502,6 +1688,116 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return new TextureHandle((uint)(textureImages.Count - 1));
     }
 
+    public TextureHandle LoadTexture(
+        float[] imageData,
+        uint width,
+        uint height,
+        VkFormat format = VkFormat.R32G32B32A32Sfloat)
+    {
+        var imageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = format,
+            extent = new VkExtent3D
+            {
+                width = width,
+                height = height,
+                depth = 1
+            },
+            mipLevels = 1,
+            arrayLayers = 1,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.TransferDst |
+                    VkImageUsageFlags.Sampled,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice
+        };
+
+        Vma.vmaCreateImage(
+            allocator,
+            imageInfo,
+            allocInfo,
+            out var image,
+            out _,
+            null).CheckResult();
+
+        UploadHDRData(
+            imageData,
+            image,
+            width,
+            height,
+            format);
+
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = image,
+            viewType = VkImageViewType.Image2D,
+            format = format,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(
+            &viewInfo,
+            null,
+            out var imageView).CheckResult();
+
+        var samplerInfo = new VkSamplerCreateInfo
+        {
+            sType = VkStructureType.SamplerCreateInfo,
+            magFilter = VkFilter.Linear,
+            minFilter = VkFilter.Linear,
+            mipmapMode = VkSamplerMipmapMode.Linear,
+            addressModeU = VkSamplerAddressMode.Repeat,
+            addressModeV = VkSamplerAddressMode.Repeat,
+            addressModeW = VkSamplerAddressMode.Repeat,
+            mipLodBias = 0.0f,
+            anisotropyEnable = false,
+            maxAnisotropy = 1.0f,
+            compareEnable = false,
+            minLod = 0.0f,
+            maxLod = 0.0f,
+        };
+
+        deviceApi.vkCreateSampler(
+            &samplerInfo,
+            null,
+            out var sampler).CheckResult();
+
+        textureImages.Add(image);
+        textureImageViews.Add(imageView);
+        textureSamplers.Add(sampler);
+
+        return new TextureHandle(
+            (uint)(textureImages.Count - 1));
+    }
+
+    public TextureHandle LoadHDRTexture(
+        float[] imageData,
+        uint width,
+        uint height)
+    {
+        return LoadTexture(
+            imageData,
+            width,
+            height,
+            VkFormat.R32G32B32A32Sfloat);
+    }
+
     private void TransitionDepthImage()
     {
         var allocInfo = new VkCommandBufferAllocateInfo
@@ -1570,9 +1866,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateDescriptorSetLayout()
     {
-        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[5];
+        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[7];
 
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 7; i++)
         {
             set0Bindings[i] = new VkDescriptorSetLayoutBinding
             {
@@ -1583,10 +1879,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             };
         }
 
+
         var set0Info = new VkDescriptorSetLayoutCreateInfo
         {
             sType = VkStructureType.DescriptorSetLayoutCreateInfo,
-            bindingCount = 5,
+            bindingCount = 7,
             pBindings = set0Bindings
         };
 
@@ -1676,6 +1973,24 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         }
     }
 
+    private void UploadHDRData(
+        float[] data,
+        VkImage image,
+        uint width,
+        uint height,
+        VkFormat format)
+    {
+        var byteData = MemoryMarshal.AsBytes(
+            data.AsSpan());
+
+        UploadMeshData(
+            byteData.ToArray(),
+            image,
+            width,
+            height,
+            format);
+    }
+
     private void UploadFrameConstants(FrameConstants constants)
     {
         void* mapped = null;
@@ -1752,6 +2067,496 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         return result;
     }
+
+    private VkImage CreateCubemapImage(uint size)
+    {
+        var imageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = VkFormat.R16G16B16A16Sfloat,
+            extent = new VkExtent3D { width = size, height = size, depth = 1 },
+            mipLevels = 1,
+            arrayLayers = 6,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.Storage | VkImageUsageFlags.Sampled,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+            flags = VkImageCreateFlags.CubeCompatible,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice
+        };
+
+        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
+        return image;
+    }
+
+    private VkImageView CreateCubemapView(VkImage image, uint size)
+    {
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = image,
+            viewType = VkImageViewType.ImageCube,
+            format = VkFormat.R16G16B16A16Sfloat,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 6,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
+        return imageView;
+    }
+
+    private VkImage CreateCubemapFaceImage(uint size, VkFormat format)
+    {
+        var imageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = format,
+            extent = new VkExtent3D { width = size, height = size, depth = 1 },
+            mipLevels = 1,
+            arrayLayers = 1,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.Storage | VkImageUsageFlags.Sampled,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice
+        };
+
+        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
+        return image;
+    }
+
+    private VkImageView CreateCubemapFaceView(VkImage image, VkFormat format)
+    {
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = image,
+            viewType = VkImageViewType.Image2D,
+            format = format,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
+        return imageView;
+    }
+
+    private void CreateCubemapSamplers()
+    {
+        var cubemapSamplerInfo = new VkSamplerCreateInfo
+        {
+            sType = VkStructureType.SamplerCreateInfo,
+            magFilter = VkFilter.Linear,
+            minFilter = VkFilter.Linear,
+            mipmapMode = VkSamplerMipmapMode.Linear,
+            addressModeU = VkSamplerAddressMode.ClampToEdge,
+            addressModeV = VkSamplerAddressMode.ClampToEdge,
+            addressModeW = VkSamplerAddressMode.ClampToEdge,
+            minLod = 0.0f,
+            maxLod = 0.0f,
+        };
+
+        deviceApi.vkCreateSampler(&cubemapSamplerInfo, null, out cubemapSampler).CheckResult();
+
+        var brdfSamplerInfo = new VkSamplerCreateInfo
+        {
+            sType = VkStructureType.SamplerCreateInfo,
+            magFilter = VkFilter.Linear,
+            minFilter = VkFilter.Linear,
+            mipmapMode = VkSamplerMipmapMode.Nearest,
+            addressModeU = VkSamplerAddressMode.ClampToEdge,
+            addressModeV = VkSamplerAddressMode.ClampToEdge,
+            addressModeW = VkSamplerAddressMode.ClampToEdge,
+            minLod = 0.0f,
+            maxLod = 1.0f,
+        };
+
+        deviceApi.vkCreateSampler(&brdfSamplerInfo, null, out brdfLUTSampler).CheckResult();
+    }
+
+    public CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
+    {
+        try
+        {
+            using var imageData = Image.Load<RgbaVector>(hdrData);
+
+            var imageWidth = (uint)imageData.Width;
+            var imageHeight = (uint)imageData.Height;
+
+            // Preserve HDR floating-point pixel data.
+            var pixelData = new float[imageData.Width * imageData.Height * 4];
+
+            imageData.ProcessPixelRows(accessor =>
+            {
+                for (var y = 0; y < accessor.Height; y++)
+                {
+                    var row = accessor.GetRowSpan(y);
+
+                    for (var x = 0; x < row.Length; x++)
+                    {
+                        var pixel = row[x];
+
+                        var index = (y * row.Length + x) * 4;
+
+                        pixelData[index + 0] = pixel.R;
+                        pixelData[index + 1] = pixel.G;
+                        pixelData[index + 2] = pixel.B;
+                        pixelData[index + 3] = pixel.A;
+                    }
+                }
+            });
+
+            // This must create a floating-point Vulkan texture.
+            var equirectHandle = LoadHDRTexture(
+                pixelData,
+                imageWidth,
+                imageHeight);
+
+            var equirectView =
+                textureImageViews[(int)equirectHandle.Id];
+
+            const uint cubeSize = 512;
+
+            var cubemapImage = CreateCubemapImage(cubeSize);
+            var cubemapView = CreateCubemapView(cubemapImage, cubeSize);
+
+            ConvertEquirectangularToCubemap(
+                equirectView,
+                cubemapImage,
+                cubeSize);
+
+            cubemapTextures.Add(new CubemapData
+            {
+                Images = [cubemapImage],
+                Views = [cubemapView],
+                Width = cubeSize,
+            });
+
+            Console.WriteLine(
+                $"Loaded HDRI cubemap: {cubeSize}x{cubeSize}, 6 faces");
+
+            return new CubemapHandle(
+                (uint)(cubemapTextures.Count - 1));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to load HDRI: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void ConvertEquirectangularToCubemap(VkImageView equirectView, VkImage cubemapImage, uint faceSize)
+    {
+        fixed (VkDescriptorSetLayout* pEquirectToCubemapDescriptorLayout = &equirectToCubemapDescriptorLayout)
+        {
+            var allocInfo = new VkDescriptorSetAllocateInfo
+            {
+                sType = VkStructureType.DescriptorSetAllocateInfo,
+                descriptorPool = descriptorPool,
+                descriptorSetCount = 1,
+                pSetLayouts = pEquirectToCubemapDescriptorLayout,
+            };
+
+            deviceApi.vkAllocateDescriptorSets(allocInfo, out var descriptorSet).CheckResult();
+
+            var equirectImageInfo = new VkDescriptorImageInfo
+            {
+                sampler = textureSamplers[0],
+                imageView = equirectView,
+                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+            };
+
+            var writeDescriptor = new VkWriteDescriptorSet
+            {
+                sType = VkStructureType.WriteDescriptorSet,
+                dstSet = descriptorSet,
+                dstBinding = 0,
+                descriptorCount = 1,
+                descriptorType = VkDescriptorType.CombinedImageSampler,
+                pImageInfo = &equirectImageInfo,
+            };
+
+            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
+
+            // Transition cubemap to general layout
+            TransitionImageLayout(cubemapImage, VkFormat.R16G16B16A16Sfloat, VkImageLayout.Undefined,
+                VkImageLayout.General);
+
+            // Dispatch compute for each cubemap face (array layer)
+            for (var faceIndex = 0; faceIndex < 6; faceIndex++)
+            {
+                DispatchComputeForFace(descriptorSet, cubemapImage, faceSize, faceIndex);
+            }
+
+            // Transition to shader read
+            TransitionImageLayout(cubemapImage, VkFormat.R16G16B16A16Sfloat, VkImageLayout.General,
+                VkImageLayout.ShaderReadOnlyOptimal);
+        }
+    }
+
+    private void DispatchComputeForFace(VkDescriptorSet descriptorSet, VkImage cubemapImage, uint faceSize,
+        int faceIndex)
+    {
+        // Create storage view for this array layer
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = cubemapImage,
+            viewType = VkImageViewType.Image2D,
+            format = VkFormat.R16G16B16A16Sfloat,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = (uint)faceIndex,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out var storageView).CheckResult();
+
+        var storageImageInfo = new VkDescriptorImageInfo
+        {
+            imageView = storageView,
+            imageLayout = VkImageLayout.General,
+        };
+
+        var writeStorage = new VkWriteDescriptorSet
+        {
+            sType = VkStructureType.WriteDescriptorSet,
+            dstSet = descriptorSet,
+            dstBinding = 1,
+            descriptorCount = 1,
+            descriptorType = VkDescriptorType.StorageImage,
+            pImageInfo = &storageImageInfo,
+        };
+
+        deviceApi.vkUpdateDescriptorSets(1, &writeStorage, 0, null);
+
+        // Allocate command buffer
+        var allocInfo = new VkCommandBufferAllocateInfo
+        {
+            sType = VkStructureType.CommandBufferAllocateInfo,
+            level = VkCommandBufferLevel.Primary,
+            commandPool = commandPool,
+            commandBufferCount = 1,
+        };
+
+        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmdBuffer).CheckResult();
+
+        var beginInfo = new VkCommandBufferBeginInfo
+        {
+            sType = VkStructureType.CommandBufferBeginInfo,
+            flags = VkCommandBufferUsageFlags.OneTimeSubmit,
+        };
+
+        deviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
+
+        var imageMemoryBarrier = new VkImageMemoryBarrier
+        {
+            sType = VkStructureType.ImageMemoryBarrier,
+            srcAccessMask = 0,
+            dstAccessMask = VkAccessFlags.ShaderWrite,
+            oldLayout = VkImageLayout.General,
+            newLayout = VkImageLayout.General,
+            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            image = cubemapImage,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = (uint)faceIndex,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCmdPipelineBarrier(cmdBuffer,
+            VkPipelineStageFlags.TopOfPipe,
+            VkPipelineStageFlags.ComputeShader,
+            VkDependencyFlags.None,
+            0, null,
+            0, null,
+            1, &imageMemoryBarrier);
+
+
+        deviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, equirectToCubemapPipeline);
+        deviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute, equirectToCubemapPipelineLayout,
+            0, 1, &descriptorSet, 0, null);
+
+        var faceIndexData = faceIndex;
+        deviceApi.vkCmdPushConstants(cmdBuffer, equirectToCubemapPipelineLayout, VkShaderStageFlags.Compute, 0,
+            (uint)sizeof(int), &faceIndexData);
+
+        uint groupSize = 8;
+        uint numGroups = (faceSize + groupSize - 1) / groupSize;
+        deviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
+
+        deviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
+
+        var submitInfo = new VkSubmitInfo
+        {
+            sType = VkStructureType.SubmitInfo,
+            commandBufferCount = 1,
+            pCommandBuffers = &cmdBuffer,
+        };
+
+        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+
+        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
+        deviceApi.vkDestroyImageView(storageView, null);
+    }
+
+    public void GenerateBRDFLUT()
+    {
+        const uint lutSize = 512;
+
+        var imageInfo = new VkImageCreateInfo
+        {
+            sType = VkStructureType.ImageCreateInfo,
+            imageType = VkImageType.Image2D,
+            format = VkFormat.R16G16Sfloat,
+            extent = new VkExtent3D { width = lutSize, height = lutSize, depth = 1 },
+            mipLevels = 1,
+            arrayLayers = 1,
+            samples = VkSampleCountFlags.Count1,
+            tiling = VkImageTiling.Optimal,
+            usage = VkImageUsageFlags.Storage | VkImageUsageFlags.Sampled,
+            sharingMode = VkSharingMode.Exclusive,
+            initialLayout = VkImageLayout.Undefined,
+        };
+
+        var allocInfo = new VmaAllocationCreateInfo
+        {
+            usage = VmaMemoryUsage.AutoPreferDevice
+        };
+
+        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out brdfLUTImage, out _, null).CheckResult();
+
+        var viewInfo = new VkImageViewCreateInfo
+        {
+            sType = VkStructureType.ImageViewCreateInfo,
+            image = brdfLUTImage,
+            viewType = VkImageViewType.Image2D,
+            format = VkFormat.R16G16Sfloat,
+            subresourceRange = new VkImageSubresourceRange
+            {
+                aspectMask = VkImageAspectFlags.Color,
+                baseMipLevel = 0,
+                levelCount = 1,
+                baseArrayLayer = 0,
+                layerCount = 1,
+            }
+        };
+
+        deviceApi.vkCreateImageView(&viewInfo, null, out brdfLUTImageView).CheckResult();
+
+        TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.Undefined, VkImageLayout.General);
+
+        fixed (VkDescriptorSetLayout* pBrdfLutDescriptorLayout = &brdfLutDescriptorLayout)
+        {
+            var allocDescInfo = new VkDescriptorSetAllocateInfo
+            {
+                sType = VkStructureType.DescriptorSetAllocateInfo,
+                descriptorPool = descriptorPool,
+                descriptorSetCount = 1,
+                pSetLayouts = pBrdfLutDescriptorLayout
+            };
+
+            VkDescriptorSet brdfLutDescriptorSet;
+            deviceApi.vkAllocateDescriptorSets(&allocDescInfo, &brdfLutDescriptorSet).CheckResult();
+
+            var storageImageInfo = new VkDescriptorImageInfo
+            {
+                imageView = brdfLUTImageView,
+                imageLayout = VkImageLayout.General,
+            };
+
+            var writeDescriptor = new VkWriteDescriptorSet
+            {
+                sType = VkStructureType.WriteDescriptorSet,
+                dstSet = brdfLutDescriptorSet,
+                dstBinding = 0,
+                descriptorCount = 1,
+                descriptorType = VkDescriptorType.StorageImage,
+                pImageInfo = &storageImageInfo,
+            };
+
+            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
+
+            var allocCmdInfo = new VkCommandBufferAllocateInfo
+            {
+                sType = VkStructureType.CommandBufferAllocateInfo,
+                level = VkCommandBufferLevel.Primary,
+                commandPool = commandPool,
+                commandBufferCount = 1,
+            };
+
+            deviceApi.vkAllocateCommandBuffer(&allocCmdInfo, out var cmdBuffer).CheckResult();
+
+            var beginInfo = new VkCommandBufferBeginInfo
+            {
+                sType = VkStructureType.CommandBufferBeginInfo,
+                flags = VkCommandBufferUsageFlags.OneTimeSubmit,
+            };
+
+            deviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
+
+            deviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipeline);
+            deviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipelineLayout,
+                0, 1, &brdfLutDescriptorSet, 0, null);
+
+            uint groupSize = 8;
+            uint numGroups = (lutSize + groupSize - 1) / groupSize;
+            deviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
+
+            deviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
+
+            var submitInfo = new VkSubmitInfo
+            {
+                sType = VkStructureType.SubmitInfo,
+                commandBufferCount = 1,
+                pCommandBuffers = &cmdBuffer,
+            };
+
+            deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
+            deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+
+            deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
+
+            TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.General,
+                VkImageLayout.ShaderReadOnlyOptimal);
+
+            Console.WriteLine("Generated BRDF LUT: 512x512");
+        }
+    }
 }
 
 public struct Material
@@ -1790,4 +2595,11 @@ struct PushConstants
 {
     public Matrix4x4 Mvp;
     public Matrix4x4 Model;
+}
+
+internal struct CubemapData
+{
+    public VkImage[] Images;
+    public VkImageView[] Views;
+    public uint Width;
 }

@@ -21,6 +21,11 @@ public sealed class Renderer : IDisposable
         return vulkanRenderer.LoadMesh(meshData);
     }
 
+    public CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
+    {
+        return vulkanRenderer.LoadEquirectangularHDRI(hdrData, width, height);
+    }
+
     public void Render(RenderRequest request)
     {
         vulkanRenderer?.Render();
@@ -47,4 +52,10 @@ public struct MaterialHandle
 {
     public uint Id { get; }
     internal MaterialHandle(uint id) => Id = id;
+}
+
+public struct CubemapHandle
+{
+    public uint Id { get; }
+    internal CubemapHandle(uint id) => Id = id;
 }

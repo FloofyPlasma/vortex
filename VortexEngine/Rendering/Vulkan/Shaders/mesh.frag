@@ -5,6 +5,8 @@ layout (set = 0, binding = 1) uniform sampler2D normalTexture;
 layout (set = 0, binding = 2) uniform sampler2D metallicRoughnessTexture;
 layout (set = 0, binding = 3) uniform sampler2D occlusionTexture;
 layout (set = 0, binding = 4) uniform sampler2D emissiveTexture;
+layout (set = 0, binding = 5) uniform samplerCube iblSpecularTexture;
+layout (set = 0, binding = 6) uniform sampler2D brdfLUT;
 
 layout (set = 1, binding = 0) uniform FrameConstants {
     vec4 cameraPos;
@@ -116,15 +118,26 @@ void main()
     vec3 kD = (1.0 - kS) * (1.0 - metallic);
 
     float NdotL = max(dot(N, L), 0.0);
-    vec3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + 0.001);
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 specular = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.001);
 
     vec3 Lo = (kD * albedo / PI + specular) * frame.directionalColor.rgb * frame.directionalLight.w * NdotL;
+
+    // IBL Specular
+    vec3 R = reflect(-V, N);
+    vec3 iblSpecular = texture(iblSpecularTexture, R).rgb;
+
+    // BDRF LUT lookup
+    vec2 brdf = texture(brdfLUT, vec2(NdotV, roughness)).rg;
+
+    vec3 specularIBL = iblSpecular * (F0 * brdf.x + brdf.y);
 
     // Ambient
     vec3 ambient = frame.ambientColor.rgb * frame.ambientColor.w * albedo * ao;
 
     vec3 emissive = texture(emissiveTexture, fs_in.texCoord).rgb;
-    vec3 color = ambient + Lo + emissive;
+
+    vec3 color = (Lo + specularIBL) * ao + ambient + emissive;
 
     // Tone mapping (Reinhard)
     color = color / (color + vec3(1.0));

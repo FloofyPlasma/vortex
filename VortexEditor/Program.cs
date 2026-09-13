@@ -16,6 +16,9 @@ internal class Program
         {
             engine.Initialize(window);
 
+            var hdrData = File.ReadAllBytes("VortexEditor/Assets/Environment.exr");
+            var cubemapHandle = engine.Renderer.LoadEquirectangularHDRI(hdrData, 2048, 1024);
+
             var meshBytes = File.ReadAllBytes("VortexEditor/Assets/DamagedHelmet.glb");
             var meshHandle = engine.Renderer.LoadMesh(meshBytes);
 
