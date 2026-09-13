@@ -559,7 +559,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             inputRate = VkVertexInputRate.Vertex
         };
 
-        var attributeDescriptions = stackalloc VkVertexInputAttributeDescription[3];
+        var attributeDescriptions = stackalloc VkVertexInputAttributeDescription[4];
         attributeDescriptions[0] = new VkVertexInputAttributeDescription
         {
             location = 0,
@@ -581,10 +581,18 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             format = VkFormat.R32G32Sfloat,
             offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.TexCoord))
         };
+        attributeDescriptions[3] = new VkVertexInputAttributeDescription
+        {
+            location = 3,
+            binding = 0,
+            format = VkFormat.R32G32B32A32Sfloat,
+            offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.Tangent))
+        };
 
         Console.WriteLine($"Position offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Position))}");
         Console.WriteLine($"Normal offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Normal))}");
         Console.WriteLine($"TexCoord offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.TexCoord))}");
+        Console.WriteLine($"Tangent offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Tangent))}");
         Console.WriteLine($"Stride: {sizeof(Vertex)}");
 
         var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
@@ -592,7 +600,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             sType = VkStructureType.PipelineVertexInputStateCreateInfo,
             vertexBindingDescriptionCount = 1,
             pVertexBindingDescriptions = &bindingDescription,
-            vertexAttributeDescriptionCount = 3,
+            vertexAttributeDescriptionCount = 4,
             pVertexAttributeDescriptions = attributeDescriptions
         };
 
@@ -868,7 +876,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 var frameConstants = new FrameConstants
                 {
                     CameraPos = new Vector4(0, 2, 3, 0),
-                    DirectionalLight = new Vector4(-0.5f, -0.8f, -0.3f, 1),
+                    DirectionalLight = new Vector4(0, -2, -3, 1),
                     DirectionalColor = new Vector4(1, 1, 1, 1),
                     AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f),
                     DebugMode = 0, // 0 = full PBR, 1 = metallic, 2 = roughness, 3 = normal, 4 = AO
@@ -1345,6 +1353,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 var indices = primitive.GetIndices().ToArray();
 
+                var tangents = primitive.GetVertexAccessor("TANGENT")?.AsVector4Array().ToArray() ??
+                               ComputeTangents(positions, normals, texCoords, indices);
+
                 var vertices = new Vertex[positions.Length];
                 for (var i = 0; i < positions.Length; i++)
                 {
@@ -1352,7 +1363,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                     {
                         Position = positions[i],
                         Normal = normals[i],
-                        TexCoord = texCoords[i]
+                        TexCoord = texCoords[i],
+                        Tangent = tangents[i]
                     };
                 }
 
@@ -1661,6 +1673,75 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         Vma.vmaMapMemory(allocator, frameConstantAllocation, &mapped).CheckResult();
         *(FrameConstants*)mapped = constants;
         Vma.vmaUnmapMemory(allocator, frameConstantAllocation);
+    }
+
+    // Lengyel, FGED2 Vol 2 - Tangent space calculation (7.4)
+    private Vector4[] ComputeTangents(Vector3[] positions, Vector3[] normals, Vector2[] texCoords, uint[] indices)
+    {
+        var tangents = new Vector3[positions.Length];
+        var bitangents = new Vector3[positions.Length];
+        for (var i = 0; i < indices.Length; i += 3)
+        {
+            var i0 = (int)indices[i];
+            var i1 = (int)indices[i + 1];
+            var i2 = (int)indices[i + 2];
+
+            var v0 = positions[i0];
+            var v1 = positions[i1];
+            var v2 = positions[i2];
+
+            var uv0 = texCoords[i0];
+            var uv1 = texCoords[i1];
+            var uv2 = texCoords[i2];
+
+            var edge1 = v1 - v0;
+            var edge2 = v2 - v0;
+
+            var deltaUV1 = uv1 - uv0;
+            var deltaUV2 = uv2 - uv0;
+
+            var f = 1.0f / (deltaUV1.X * deltaUV2.Y - deltaUV2.X * deltaUV1.Y);
+
+            var tangent = new Vector3(
+                f * (deltaUV2.Y * edge1.X - deltaUV1.Y * edge2.X),
+                f * (deltaUV2.Y * edge1.Y - deltaUV1.Y * edge2.Y),
+                f * (deltaUV2.Y * edge1.Z - deltaUV1.Y * edge2.Z)
+            );
+
+            var bitangent = new Vector3(
+                f * (-deltaUV2.X * edge1.X + deltaUV1.X * edge2.X),
+                f * (-deltaUV2.X * edge1.Y + deltaUV1.X * edge2.Y),
+                f * (-deltaUV2.X * edge1.Z + deltaUV1.X * edge2.Z)
+            );
+
+            tangents[i0] += tangent;
+            tangents[i1] += tangent;
+            tangents[i2] += tangent;
+
+            bitangents[i0] += bitangent;
+            bitangents[i1] += bitangent;
+            bitangents[i2] += bitangent;
+        }
+
+        var result = new Vector4[positions.Length];
+
+        for (var i = 0; i < positions.Length; i++)
+        {
+            var t = Vector3.Normalize(tangents[i]);
+            var b = Vector3.Normalize(bitangents[i]);
+            var n = normals[i];
+
+            // Gram-Schmidt orthogonalize
+            t = Vector3.Normalize(t - Vector3.Dot(t, n) * n);
+            b = Vector3.Normalize(b - Vector3.Dot(b, n) * n);
+
+            // Calculate handedness
+            var handedness = Vector3.Dot(Vector3.Cross(n, t), b) < 0 ? -1.0f : 1.0f;
+
+            result[i] = new Vector4(t.X, t.Y, t.Z, handedness);
+        }
+
+        return result;
     }
 }
 

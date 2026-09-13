@@ -17,7 +17,7 @@ layout (set = 1, binding = 0) uniform FrameConstants {
 layout (location = 0) in VS_OUT {
     vec3 position;
     vec2 texCoord;
-    vec3 normal;
+    mat3 tbn;
 } fs_in;
 
 layout (location = 0) out vec4 outColor;
@@ -69,8 +69,7 @@ void main()
     vec3 normalMap = texture(normalTexture, fs_in.texCoord).rgb;
     normalMap = normalMap * 2.0 - 1.0;
 
-    // TODO: Transform tangent-space normal using a TBN matrix.
-    vec3 N = normalize(mix(fs_in.normal, normalMap, 0.8));
+    vec3 N = normalize(fs_in.tbn * normalMap);
 
     vec2 metallicRoughness = texture(metallicRoughnessTexture, fs_in.texCoord).bg;
     float metallic = metallicRoughness.x;
