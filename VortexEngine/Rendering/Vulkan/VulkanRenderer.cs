@@ -112,8 +112,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         Vma.vmaDestroyBuffer(context.Allocator, frameConstantBuffer, frameConstantAllocation);
 
+        shaderManager.Dispose();
         sync.Dispose();
-
+        swapchain.Dispose();
         context.Dispose();
     }
 
