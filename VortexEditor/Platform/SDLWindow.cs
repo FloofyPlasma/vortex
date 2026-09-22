@@ -8,13 +8,8 @@ namespace VortexEditor.Platform;
 // ReSharper disable once InconsistentNaming
 public class SDLWindow : IPlatformWindow, IVulkanSurfaceProvider
 {
-    private IntPtr window;
     private bool isOpen;
-
-    public nint NativeHandle => (nint)window;
-    public uint Width { get; private set; }
-    public uint Height { get; private set; }
-    public bool IsOpen => isOpen;
+    private IntPtr window;
 
     public SDLWindow(uint width, uint height, string title = "Vortex Editor")
     {
@@ -32,19 +27,10 @@ public class SDLWindow : IPlatformWindow, IVulkanSurfaceProvider
         isOpen = true;
     }
 
-    public void GetRequiredExtensions(out string[] extensions)
-    {
-        extensions = SDL.VulkanGetInstanceExtensions(out _) ?? throw new InvalidOperationException("Failed to get Vulkan instance extensions");
-    }
-
-    public void CreateSurface(VkInstance instance, out VkSurfaceKHR surface)
-    {
-        var success = SDL.VulkanCreateSurface(window, instance.Handle, IntPtr.Zero, out var surfaceHandle);
-        
-        if (!success) throw new InvalidOperationException($"Failed to create Vulkan surface: {SDL.GetError()}");
-
-        surface = new VkSurfaceKHR((ulong)surfaceHandle);
-    }
+    public nint NativeHandle => (nint)window;
+    public uint Width { get; private set; }
+    public uint Height { get; private set; }
+    public bool IsOpen => isOpen;
 
     public void ProcessEvents()
     {
@@ -115,4 +101,28 @@ public class SDLWindow : IPlatformWindow, IVulkanSurfaceProvider
     public event Action<IMouseButtonEvent>? OnMouseButtonUp;
     public event Action<uint, uint>? OnResize;
     public event Action? OnClosing;
+
+    public VkSurfaceKHR CreateSurface(VkInstance instance)
+    {
+        var success = SDL.VulkanCreateSurface(window, instance.Handle, IntPtr.Zero, out var surfaceHandle);
+
+        if (!success) throw new InvalidOperationException($"Failed to create Vulkan surface: {SDL.GetError()}");
+
+        return new VkSurfaceKHR((ulong)surfaceHandle);
+    }
+
+    public void GetRequiredExtensions(out string[] extensions)
+    {
+        extensions = SDL.VulkanGetInstanceExtensions(out _) ??
+                     throw new InvalidOperationException("Failed to get Vulkan instance extensions");
+    }
+
+    public void CreateSurface(VkInstance instance, out VkSurfaceKHR surface)
+    {
+        var success = SDL.VulkanCreateSurface(window, instance.Handle, IntPtr.Zero, out var surfaceHandle);
+
+        if (!success) throw new InvalidOperationException($"Failed to create Vulkan surface: {SDL.GetError()}");
+
+        surface = new VkSurfaceKHR((ulong)surfaceHandle);
+    }
 }

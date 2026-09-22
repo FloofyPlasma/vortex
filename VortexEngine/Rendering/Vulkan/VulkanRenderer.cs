@@ -1,8 +1,8 @@
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using SharpGLTF.Schema2;
 using SixLabors.ImageSharp.PixelFormats;
+using VortexEngine.Rendering.Vulkan.Core;
 using Vortice.ShaderCompiler;
 using Vortice.Vulkan;
 using static Vortice.Vulkan.Vulkan;
@@ -14,7 +14,6 @@ namespace VortexEngine.Rendering.Vulkan;
 internal sealed unsafe class VulkanRenderer : IDisposable
 {
     private const int MaxFramesInFlight = 2;
-    private VmaAllocator allocator;
     private VkImage brdfLUTImage;
     private VkImageView brdfLUTImageView;
     private VkSampler brdfLUTSampler;
@@ -26,6 +25,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkCommandBuffer[] commandBuffers = null!;
 
     private VkCommandPool commandPool;
+    private VulkanContext context;
     private VkSampler cubemapSampler;
 
     private List<CubemapData> cubemapTextures = [];
@@ -38,8 +38,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkDescriptorPool descriptorPool;
     private VkDescriptorSetLayout descriptorSetLayout0;
     private VkDescriptorSetLayout descriptorSetLayout1;
-    private VkDevice device;
-    private VkDeviceApi deviceApi = default!;
     private VkDescriptorSetLayout equirectToCubemapDescriptorLayout;
 
     private VkPipeline equirectToCubemapPipeline;
@@ -50,28 +48,21 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkBuffer frameConstantBuffer;
     private VkDescriptorSet frameDescriptorSet;
 
-    private VkQueue graphicsQueue;
-
-    private uint graphicsQueueFamily;
     private VkSemaphore[] imageAvailableSemaphores = null!;
     private uint imageCount;
 
     private VkFence[] inFlightFences = null!;
-    private VkInstance instance;
-    private VkInstanceApi instanceApi = null!;
     private VkShaderModule meshFragmentShader;
     private VkPipeline meshPipeline;
     private VkShaderModule meshVertexShader;
 
     private List<Mesh> meshes = [];
 
-    private VkPhysicalDevice physicalDevice;
     private VkPipelineLayout pipelineLayout;
     private VkSemaphore[] renderFinishedSemaphores = null!;
 
     // Debug Mesh Stuff
     private float rotation;
-    private VkSurfaceKHR surface;
     private VkSwapchainKHR swapchain;
     private VkExtent2D swapchainExtent;
     private VkFormat swapchainImageFormat;
@@ -84,15 +75,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
-        vkInitialize().CheckResult();
+        context = new VulkanContext(surfaceProvider);
 
         swapchainExtent = new VkExtent2D { width = width, height = height };
 
-        CreateInstance(surfaceProvider);
-        surfaceProvider.CreateSurface(instance, out surface);
-        SelectPhysicalDevice();
-        CreateLogicalDevice();
-        CreateAllocator();
         CreateSwapchain(width, height);
         CreateShaders();
         CreateEquirectToCubemapPipeline();
@@ -117,153 +103,56 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         {
             foreach (var primitive in mesh.Primitives)
             {
-                Vma.vmaDestroyBuffer(allocator, primitive.VertexBuffer, primitive.VertexAllocation);
-                Vma.vmaDestroyBuffer(allocator, primitive.IndexBuffer, primitive.IndexAllocation);
+                Vma.vmaDestroyBuffer(context.Allocator, primitive.VertexBuffer, primitive.VertexAllocation);
+                Vma.vmaDestroyBuffer(context.Allocator, primitive.IndexBuffer, primitive.IndexAllocation);
             }
         }
 
-        deviceApi.vkDestroyImageView(depthImageView, null);
+        context.DeviceApi.vkDestroyImageView(depthImageView, null);
 
-        deviceApi.vkDestroyDescriptorPool(descriptorPool, null);
-        deviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
+        context.DeviceApi.vkDestroyDescriptorPool(descriptorPool, null);
+        context.DeviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
 
         foreach (var cubemap in cubemapTextures)
         {
             for (var i = 0; i < 6; i++)
             {
-                deviceApi.vkDestroyImageView(cubemap.Views[i], null);
-                Vma.vmaDestroyImage(allocator, cubemap.Images[i], VmaAllocation.Null);
+                context.DeviceApi.vkDestroyImageView(cubemap.Views[i], null);
+                Vma.vmaDestroyImage(context.Allocator, cubemap.Images[i], VmaAllocation.Null);
             }
         }
 
-        deviceApi.vkDestroySampler(cubemapSampler, null);
-        deviceApi.vkDestroySampler(brdfLUTSampler, null);
+        context.DeviceApi.vkDestroySampler(cubemapSampler, null);
+        context.DeviceApi.vkDestroySampler(brdfLUTSampler, null);
 
         if (brdfLUTImageView.Handle != 0)
         {
-            deviceApi.vkDestroyImageView(brdfLUTImageView, null);
+            context.DeviceApi.vkDestroyImageView(brdfLUTImageView, null);
         }
 
         if (brdfLUTImage.Handle != 0)
         {
-            Vma.vmaDestroyImage(allocator, brdfLUTImage, VmaAllocation.Null);
+            Vma.vmaDestroyImage(context.Allocator, brdfLUTImage, VmaAllocation.Null);
         }
 
-        Vma.vmaDestroyImage(allocator, depthImage, depthImageAllocation);
-        Vma.vmaDestroyBuffer(allocator, frameConstantBuffer, frameConstantAllocation);
+        Vma.vmaDestroyImage(context.Allocator, depthImage, depthImageAllocation);
+        Vma.vmaDestroyBuffer(context.Allocator, frameConstantBuffer, frameConstantAllocation);
 
-        Vma.vmaDestroyAllocator(allocator);
-    }
-
-    private void CreateInstance(IVulkanSurfaceProvider surfaceProvider)
-    {
-        VkUtf8ReadOnlyString applicationName = "Vortex"u8;
-        VkUtf8ReadOnlyString engineName = "Vortex Engine"u8;
-
-        var appInfo = new VkApplicationInfo
-        {
-            sType = VkStructureType.ApplicationInfo,
-            pApplicationName = applicationName,
-            applicationVersion = new VkVersion(1, 0, 0),
-            pEngineName = engineName,
-            engineVersion = new VkVersion(1, 0, 0),
-            apiVersion = new VkVersion(1, 4, 0)
-        };
-
-        surfaceProvider.GetRequiredExtensions(out var extensions);
-        using var vkExtensions = new VkStringArray(extensions);
-
-        var createInfo = new VkInstanceCreateInfo
-        {
-            sType = VkStructureType.InstanceCreateInfo,
-            pApplicationInfo = &appInfo,
-            enabledExtensionCount = vkExtensions.Length,
-            ppEnabledExtensionNames = vkExtensions,
-        };
-
-        vkCreateInstance(&createInfo, out instance).CheckResult();
-
-        instanceApi = GetApi(instance);
-    }
-
-    private void SelectPhysicalDevice()
-    {
-        uint physicalDeviceCount = 0;
-        instanceApi.vkEnumeratePhysicalDevices(&physicalDeviceCount, null).CheckResult();
-
-        if (physicalDeviceCount == 0) throw new Exception("Failed to find physical device with Vulkan support");
-
-        Span<VkPhysicalDevice> physicalDevices = stackalloc VkPhysicalDevice[(int)physicalDeviceCount];
-        instanceApi.vkEnumeratePhysicalDevices(physicalDevices).CheckResult();
-
-        // TODO: Pick a device in a less shitty way :3
-        physicalDevice = physicalDevices[0];
-        FindQueueFamilies();
-    }
-
-    private void FindQueueFamilies()
-    {
-        uint familyCount = 0;
-        instanceApi.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, null);
-
-        var families = stackalloc VkQueueFamilyProperties[(int)familyCount];
-        instanceApi.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, families);
-
-        for (uint i = 0; i < familyCount; i++)
-        {
-            if ((families[i].queueFlags & VkQueueFlags.Graphics) != 0) graphicsQueueFamily = i;
-
-            instanceApi.vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, out var presentSupport)
-                .CheckResult();
-        }
-    }
-
-    private void CreateLogicalDevice()
-    {
-        float queuePriority = 1.0f;
-        var queueCreateInfos = stackalloc VkDeviceQueueCreateInfo[1];
-        queueCreateInfos[0] = new VkDeviceQueueCreateInfo
-        {
-            sType = VkStructureType.DeviceQueueCreateInfo,
-            queueFamilyIndex = graphicsQueueFamily,
-            queueCount = 1,
-            pQueuePriorities = &queuePriority,
-        };
-
-        var extensions = new[] { "VK_KHR_swapchain", "VK_KHR_dynamic_rendering" };
-        using var extensionNames = new VkStringArray(extensions);
-
-        var features = new VkPhysicalDeviceFeatures();
-        var dynamicRenderingFeatures = new VkPhysicalDeviceDynamicRenderingFeatures
-        {
-            sType = VkStructureType.PhysicalDeviceDynamicRenderingFeatures,
-            dynamicRendering = true,
-        };
-
-        var createInfo = new VkDeviceCreateInfo
-        {
-            sType = VkStructureType.DeviceCreateInfo,
-            queueCreateInfoCount = 1,
-            pQueueCreateInfos = (VkDeviceQueueCreateInfo*)Unsafe.AsPointer(ref queueCreateInfos[0]),
-            pEnabledFeatures = &features,
-            enabledExtensionCount = (uint)extensions.Length,
-            ppEnabledExtensionNames = extensionNames,
-            pNext = &dynamicRenderingFeatures,
-        };
-
-        instanceApi.vkCreateDevice(physicalDevice, &createInfo, null, out device).CheckResult();
-        deviceApi = GetApi(instance, device);
-        deviceApi.vkGetDeviceQueue(graphicsQueueFamily, 0, out graphicsQueue);
+        context.Dispose();
     }
 
     private void CreateSwapchain(uint width, uint height)
     {
-        instanceApi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, out var capabilities)
+        context.InstanceApi
+            .vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.PhysicalDevice, context.Surface, out var capabilities)
             .CheckResult();
         uint formatCount = 0;
-        instanceApi.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, null).CheckResult();
+        context.InstanceApi
+            .vkGetPhysicalDeviceSurfaceFormatsKHR(context.PhysicalDevice, context.Surface, &formatCount, null)
+            .CheckResult();
         var formats = new VkSurfaceFormatKHR[formatCount];
-        instanceApi.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, formats).CheckResult();
+        context.InstanceApi.vkGetPhysicalDeviceSurfaceFormatsKHR(context.PhysicalDevice, context.Surface, formats)
+            .CheckResult();
 
         // TODO: Better format picking :3
         var surfaceFormat = formats[0];
@@ -278,7 +167,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var createInfo = new VkSwapchainCreateInfoKHR
         {
             sType = VkStructureType.SwapchainCreateInfoKHR,
-            surface = surface,
+            surface = context.Surface,
             minImageCount = imageCount,
             imageFormat = surfaceFormat.format,
             imageColorSpace = surfaceFormat.colorSpace,
@@ -292,12 +181,12 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             clipped = true,
         };
 
-        deviceApi.vkCreateSwapchainKHR(&createInfo, out swapchain).CheckResult();
+        context.DeviceApi.vkCreateSwapchainKHR(&createInfo, out swapchain).CheckResult();
 
         uint swapchainImageCount = 0;
-        deviceApi.vkGetSwapchainImagesKHR(swapchain, &swapchainImageCount, null).CheckResult();
+        context.DeviceApi.vkGetSwapchainImagesKHR(swapchain, &swapchainImageCount, null).CheckResult();
         swapchainImages = new VkImage[swapchainImageCount];
-        deviceApi.vkGetSwapchainImagesKHR(swapchain, swapchainImages);
+        context.DeviceApi.vkGetSwapchainImagesKHR(swapchain, swapchainImages).CheckResult();
 
         swapchainImageViews = new VkImageView[swapchainImages.Length];
         for (int i = 0; i < swapchainImages.Length; i++)
@@ -326,7 +215,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             };
 
             VkImageView imageView;
-            deviceApi.vkCreateImageView(&createViewInfo, null, &imageView).CheckResult();
+            context.DeviceApi.vkCreateImageView(&createViewInfo, null, &imageView).CheckResult();
             swapchainImageViews[i] = imageView;
         }
 
@@ -351,7 +240,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             usage = VmaMemoryUsage.AutoPreferDevice,
         };
 
-        Vma.vmaCreateImage(allocator, depthImageInfo, allocInfo, out depthImage, out depthImageAllocation)
+        Vma.vmaCreateImage(context.Allocator, depthImageInfo, allocInfo, out depthImage, out depthImageAllocation)
             .CheckResult();
 
         var viewInfo = new VkImageViewCreateInfo
@@ -370,24 +259,24 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(&viewInfo, null, out depthImageView).CheckResult();
+        context.DeviceApi.vkCreateImageView(&viewInfo, null, out depthImageView).CheckResult();
     }
 
     private void CreateShaders()
     {
         var meshVertexCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/mesh.vert",
             ShaderKind.VertexShader);
-        meshVertexShader = ShaderCompiler.CreateShaderModule(deviceApi, meshVertexCode, "mesh.vert");
+        meshVertexShader = ShaderCompiler.CreateShaderModule(context.DeviceApi, meshVertexCode, "mesh.vert");
         var meshFragmentCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/mesh.frag",
             ShaderKind.FragmentShader);
-        meshFragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, meshFragmentCode, "mesh.frag");
+        meshFragmentShader = ShaderCompiler.CreateShaderModule(context.DeviceApi, meshFragmentCode, "mesh.frag");
 
         var equirectToCubemapCode = ShaderCompiler.LoadAndCompileGlsl(
             "VortexEngine/Rendering/Vulkan/Shaders/equirectangular_to_cubemap.comp", ShaderKind.ComputeShader);
-        equirectToCubemapShader = ShaderCompiler.CreateShaderModule(deviceApi, equirectToCubemapCode);
+        equirectToCubemapShader = ShaderCompiler.CreateShaderModule(context.DeviceApi, equirectToCubemapCode);
         var brdfLutCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/brdf_lut.comp",
             ShaderKind.ComputeShader);
-        brdfLutShader = ShaderCompiler.CreateShaderModule(deviceApi, brdfLutCode, "brdf_lut.comp");
+        brdfLutShader = ShaderCompiler.CreateShaderModule(context.DeviceApi, brdfLutCode, "brdf_lut.comp");
     }
 
     private void CreatePipelineLayout()
@@ -412,7 +301,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pPushConstantRanges = &pushConstantRange,
         };
 
-        deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
+        context.DeviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
     }
 
     private void CreateMeshGraphicsPipeline()
@@ -600,7 +489,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
             fixed (VkPipeline* pPipelines = pipelines)
             {
-                deviceApi.vkCreateGraphicsPipelines(
+                context.DeviceApi.vkCreateGraphicsPipelines(
                     VkPipelineCache.Null,
                     1,
                     &pipelineInfo,
@@ -638,7 +527,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pBindings = layoutBindings
         };
 
-        deviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out var computeDescriptorLayout).CheckResult();
+        context.DeviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out var computeDescriptorLayout).CheckResult();
 
         var pushConstantRange = new VkPushConstantRange
         {
@@ -656,7 +545,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pPushConstantRanges = &pushConstantRange
         };
 
-        deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out var computePipelineLayout).CheckResult();
+        context.DeviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out var computePipelineLayout)
+            .CheckResult();
 
         VkUtf8String pComputeShaderStageName = "main"u8;
         var shaderStageInfo = new VkPipelineShaderStageCreateInfo
@@ -674,7 +564,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             stage = shaderStageInfo,
         };
 
-        deviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out equirectToCubemapPipeline)
+        context.DeviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out equirectToCubemapPipeline)
             .CheckResult();
         equirectToCubemapDescriptorLayout = computeDescriptorLayout;
         equirectToCubemapPipelineLayout = computePipelineLayout;
@@ -697,7 +587,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pBindings = &layoutBinding
         };
 
-        deviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out brdfLutDescriptorLayout).CheckResult();
+        context.DeviceApi.vkCreateDescriptorSetLayout(&layoutInfo, null, out brdfLutDescriptorLayout).CheckResult();
 
         fixed (VkDescriptorSetLayout* pBrdfLutDescriptorLayout = &brdfLutDescriptorLayout)
         {
@@ -708,7 +598,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pSetLayouts = pBrdfLutDescriptorLayout,
             };
 
-            deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out brdfLutPipelineLayout).CheckResult();
+            context.DeviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out brdfLutPipelineLayout)
+                .CheckResult();
         }
 
         VkUtf8String pComputeShaderStageName = "main"u8;
@@ -727,7 +618,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             stage = shaderStageInfo,
         };
 
-        deviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out brdfLutPipeline)
+        context.DeviceApi.vkCreateComputePipeline(VkPipelineCache.Null, pipelineInfo, out brdfLutPipeline)
             .CheckResult();
     }
 
@@ -737,10 +628,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         {
             sType = VkStructureType.CommandPoolCreateInfo,
             flags = VkCommandPoolCreateFlags.ResetCommandBuffer,
-            queueFamilyIndex = graphicsQueueFamily,
+            queueFamilyIndex = context.GraphicsQueueFamily,
         };
 
-        deviceApi.vkCreateCommandPool(&poolInfo, null, out commandPool).CheckResult();
+        context.DeviceApi.vkCreateCommandPool(&poolInfo, null, out commandPool).CheckResult();
     }
 
     private unsafe void CreateCommandBuffers()
@@ -756,7 +647,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         fixed (VkCommandBuffer* pCommandBuffers = commandBuffers)
         {
-            deviceApi.vkAllocateCommandBuffers(&allocInfo, pCommandBuffers).CheckResult();
+            context.DeviceApi.vkAllocateCommandBuffers(&allocInfo, pCommandBuffers).CheckResult();
         }
     }
 
@@ -774,8 +665,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         for (int i = 0; i < MaxFramesInFlight; i++)
         {
-            deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out imageAvailableSemaphores[i]).CheckResult();
-            deviceApi.vkCreateSemaphore(&semaphoreInfo, null, out renderFinishedSemaphores[i]).CheckResult();
+            context.DeviceApi.vkCreateSemaphore(&semaphoreInfo, null, out imageAvailableSemaphores[i]).CheckResult();
+            context.DeviceApi.vkCreateSemaphore(&semaphoreInfo, null, out renderFinishedSemaphores[i]).CheckResult();
 
             var fenceInfo = new VkFenceCreateInfo
             {
@@ -783,7 +674,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 flags = VkFenceCreateFlags.Signaled
             };
 
-            deviceApi.vkCreateFence(&fenceInfo, null, out inFlightFences[i]).CheckResult();
+            context.DeviceApi.vkCreateFence(&fenceInfo, null, out inFlightFences[i]).CheckResult();
         }
     }
 
@@ -793,19 +684,20 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var imageAvail = imageAvailableSemaphores[currentFrame];
         var renderDone = renderFinishedSemaphores[currentFrame];
 
-        deviceApi.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
-        deviceApi.vkResetFences(1, &fence).CheckResult();
+        context.DeviceApi.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+        context.DeviceApi.vkResetFences(1, &fence).CheckResult();
 
-        deviceApi.vkAcquireNextImageKHR(swapchain, ulong.MaxValue, imageAvail, VkFence.Null,
+        context.DeviceApi.vkAcquireNextImageKHR(swapchain, ulong.MaxValue, imageAvail, VkFence.Null,
             out var imageIndex).CheckResult();
-        deviceApi.vkResetCommandBuffer(commandBuffers[imageIndex], VkCommandBufferResetFlags.None).CheckResult();
+        context.DeviceApi.vkResetCommandBuffer(commandBuffers[imageIndex], VkCommandBufferResetFlags.None)
+            .CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
             sType = VkStructureType.CommandBufferBeginInfo,
         };
 
-        deviceApi.vkBeginCommandBuffer(commandBuffers[imageIndex], &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(commandBuffers[imageIndex], &beginInfo).CheckResult();
 
         var colorAttachment = new VkRenderingAttachmentInfo
         {
@@ -837,8 +729,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pDepthAttachment = &depthAttachment,
         };
 
-        deviceApi.vkCmdBeginRendering(commandBuffers[imageIndex], &renderingInfo);
-
+        context.DeviceApi.vkCmdBeginRendering(commandBuffers[imageIndex], &renderingInfo);
 
         if (meshes.Count > 0)
         {
@@ -865,10 +756,12 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 var mesh = meshes[0];
                 var offset = 0UL;
-                deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, meshPipeline);
+                context.DeviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                    meshPipeline);
 
                 var pushData = new PushConstants { Mvp = mvp, Model = model };
-                deviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout, VkShaderStageFlags.Vertex, 0,
+                context.DeviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout,
+                    VkShaderStageFlags.Vertex, 0,
                     (uint)sizeof(PushConstants), &pushData);
 
                 var frameConstants = new FrameConstants
@@ -884,26 +777,27 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
                 {
-                    deviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                    context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
                         pipelineLayout, 1, 1, pFrameDescriptorSet, 0, null);
                 }
 
                 foreach (var primitive in mesh.Primitives)
                 {
-                    deviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                    context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
                         pipelineLayout, 0, 1, &primitive.DescriptorSet, 0, null);
 
-                    deviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer, offset);
-                    deviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], primitive.IndexBuffer, 0,
+                    context.DeviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer,
+                        offset);
+                    context.DeviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], primitive.IndexBuffer, 0,
                         VkIndexType.Uint32);
-                    deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], primitive.IndexCount, 1, 0, 0, 0);
+                    context.DeviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], primitive.IndexCount, 1, 0, 0, 0);
                 }
             }
         }
 
-        deviceApi.vkCmdEndRendering(commandBuffers[imageIndex]);
+        context.DeviceApi.vkCmdEndRendering(commandBuffers[imageIndex]);
 
-        deviceApi.vkEndCommandBuffer(commandBuffers[imageIndex]);
+        context.DeviceApi.vkEndCommandBuffer(commandBuffers[imageIndex]);
 
         var waitSemaphores = new[] { imageAvail };
         var signalSemaphores = new[] { renderDone };
@@ -926,7 +820,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pSignalSemaphores = pSignalSemaphores
             };
 
-            deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, fence).CheckResult();
+            context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, fence).CheckResult();
         }
 
         fixed (VkSemaphore* pSignalSemaphores = signalSemaphores)
@@ -942,23 +836,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pImageIndices = &imageIndex,
             };
 
-            deviceApi.vkQueuePresentKHR(graphicsQueue, &presentInfo).CheckResult();
+            context.DeviceApi.vkQueuePresentKHR(context.GraphicsQueue, &presentInfo).CheckResult();
         }
 
         currentFrame = (currentFrame + 1) % MaxFramesInFlight;
         rotation = (rotation + 0.01f) % (2.0f * MathF.PI);
-    }
-
-    private void CreateAllocator()
-    {
-        var allocatorInfo = new VmaAllocatorCreateInfo
-        {
-            physicalDevice = physicalDevice,
-            device = device,
-            instance = instance,
-        };
-
-        Vma.vmaCreateAllocator(&allocatorInfo, out allocator).CheckResult();
     }
 
     private VkBuffer CreateBuffer(ulong size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
@@ -977,7 +859,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VmaAllocationCreateFlags.HostAccessSequentialWrite
         };
 
-        Vma.vmaCreateBuffer(allocator, bufferInfo, allocInfo, out var buffer, out allocation, null).CheckResult();
+        Vma.vmaCreateBuffer(context.Allocator, bufferInfo, allocInfo, out var buffer, out allocation, null)
+            .CheckResult();
 
         return buffer;
     }
@@ -992,7 +875,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             commandBufferCount = 1
         };
 
-        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var copyCmd).CheckResult();
+        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var copyCmd).CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
@@ -1000,7 +883,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VkCommandBufferUsageFlags.OneTimeSubmit
         };
 
-        deviceApi.vkBeginCommandBuffer(copyCmd, &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(copyCmd, &beginInfo).CheckResult();
 
         var copyRegion = new VkBufferCopy
         {
@@ -1009,9 +892,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             size = size,
         };
 
-        deviceApi.vkCmdCopyBuffer(copyCmd, srcBuffer, dstBuffer, 1, &copyRegion);
+        context.DeviceApi.vkCmdCopyBuffer(copyCmd, srcBuffer, dstBuffer, 1, &copyRegion);
 
-        deviceApi.vkEndCommandBuffer(copyCmd).CheckResult();
+        context.DeviceApi.vkEndCommandBuffer(copyCmd).CheckResult();
 
         var submitInfo = new VkSubmitInfo
         {
@@ -1020,10 +903,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pCommandBuffers = &copyCmd
         };
 
-        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-        deviceApi.vkFreeCommandBuffers(commandPool, 1, &copyCmd);
+        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &copyCmd);
     }
 
     private void UploadMeshData(ReadOnlySpan<byte> data, VkBuffer dstBuffer, ulong offset)
@@ -1034,16 +917,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             out var stagingAlloc);
 
         void* mapped = null;
-        var mapResult = Vma.vmaMapMemory(allocator, stagingAlloc, &mapped);
+        var mapResult = Vma.vmaMapMemory(context.Allocator, stagingAlloc, &mapped);
         if (mapResult != VkResult.Success)
             throw new Exception($"Failed to map memory: {mapResult}");
 
         data.CopyTo(new Span<byte>(mapped, data.Length));
-        Vma.vmaUnmapMemory(allocator, stagingAlloc);
+        Vma.vmaUnmapMemory(context.Allocator, stagingAlloc);
 
         CopyBuffer(stagingBuffer, dstBuffer, (ulong)data.Length);
 
-        Vma.vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
+        Vma.vmaDestroyBuffer(context.Allocator, stagingBuffer, stagingAlloc);
     }
 
     private void UploadMeshData(ReadOnlySpan<byte> data, VkImage dstImage, uint width, uint height, VkFormat format)
@@ -1052,9 +935,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             VmaMemoryUsage.AutoPreferHost, out var stagingAlloc);
 
         void* mapped = null;
-        Vma.vmaMapMemory(allocator, stagingAlloc, &mapped).CheckResult();
+        Vma.vmaMapMemory(context.Allocator, stagingAlloc, &mapped).CheckResult();
         data.CopyTo(new Span<byte>(mapped, data.Length));
-        Vma.vmaUnmapMemory(allocator, stagingAlloc);
+        Vma.vmaUnmapMemory(context.Allocator, stagingAlloc);
 
         TransitionImageLayout(dstImage, format, VkImageLayout.Undefined, VkImageLayout.TransferDstOptimal);
 
@@ -1062,7 +945,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         TransitionImageLayout(dstImage, format, VkImageLayout.TransferDstOptimal, VkImageLayout.ShaderReadOnlyOptimal);
 
-        Vma.vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
+        Vma.vmaDestroyBuffer(context.Allocator, stagingBuffer, stagingAlloc);
     }
 
     private void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
@@ -1075,7 +958,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             commandBufferCount = 1,
         };
 
-        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
+        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
@@ -1083,7 +966,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VkCommandBufferUsageFlags.OneTimeSubmit
         };
 
-        deviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
 
         var barrier = new VkImageMemoryBarrier
         {
@@ -1118,9 +1001,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             dstStage = VkPipelineStageFlags.FragmentShader;
         }
 
-        deviceApi.vkCmdPipelineBarrier(cmd, srcStage, dstStage, VkDependencyFlags.None, 0, null, 0, null, 1, &barrier);
+        context.DeviceApi.vkCmdPipelineBarrier(cmd, srcStage, dstStage, VkDependencyFlags.None, 0, null, 0, null, 1,
+            &barrier);
 
-        deviceApi.vkEndCommandBuffer(cmd).CheckResult();
+        context.DeviceApi.vkEndCommandBuffer(cmd).CheckResult();
 
         var submitInfo = new VkSubmitInfo
         {
@@ -1129,10 +1013,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pCommandBuffers = &cmd
         };
 
-        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
+        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
     }
 
     private void CopyBufferToImage(VkBuffer buffer, VkImage image, uint width, uint height)
@@ -1145,7 +1029,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             commandBufferCount = 1
         };
 
-        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
+        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
@@ -1153,7 +1037,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VkCommandBufferUsageFlags.OneTimeSubmit
         };
 
-        deviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
 
         var region = new VkBufferImageCopy
         {
@@ -1171,9 +1055,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             imageExtent = new VkExtent3D { width = width, height = height, depth = 1 },
         };
 
-        deviceApi.vkCmdCopyBufferToImage(cmd, buffer, image, VkImageLayout.TransferDstOptimal, 1, &region);
+        context.DeviceApi.vkCmdCopyBufferToImage(cmd, buffer, image, VkImageLayout.TransferDstOptimal, 1, &region);
 
-        deviceApi.vkEndCommandBuffer(cmd).CheckResult();
+        context.DeviceApi.vkEndCommandBuffer(cmd).CheckResult();
 
         var submitInfo = new VkSubmitInfo
         {
@@ -1182,10 +1066,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pCommandBuffers = &cmd
         };
 
-        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
+        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
     }
 
     private Vector3[] ComputeNormals(Vector3[] positions, uint[] indices)
@@ -1232,7 +1116,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             };
 
             VkDescriptorSet descriptorSet;
-            deviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
+            context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
 
             var imageInfos = stackalloc VkDescriptorImageInfo[7];
 
@@ -1301,7 +1185,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 };
             }
 
-            deviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
+            context.DeviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
 
             primitive.DescriptorSet = descriptorSet;
         }
@@ -1460,7 +1344,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             usage = VmaMemoryUsage.AutoPreferDevice
         };
 
-        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
+        Vma.vmaCreateImage(context.Allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
 
         UploadMeshData(imageData, image, width, height, format);
 
@@ -1480,7 +1364,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
+        context.DeviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
 
         var samplerInfo = new VkSamplerCreateInfo
         {
@@ -1499,7 +1383,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             maxLod = 0.0f,
         };
 
-        deviceApi.vkCreateSampler(&samplerInfo, null, out var sampler).CheckResult();
+        context.DeviceApi.vkCreateSampler(&samplerInfo, null, out var sampler).CheckResult();
 
         textureImages.Add(image);
         textureImageViews.Add(imageView);
@@ -1541,7 +1425,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         };
 
         Vma.vmaCreateImage(
-            allocator,
+            context.Allocator,
             imageInfo,
             allocInfo,
             out var image,
@@ -1571,7 +1455,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(
+        context.DeviceApi.vkCreateImageView(
             &viewInfo,
             null,
             out var imageView).CheckResult();
@@ -1593,7 +1477,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             maxLod = 0.0f,
         };
 
-        deviceApi.vkCreateSampler(
+        context.DeviceApi.vkCreateSampler(
             &samplerInfo,
             null,
             out var sampler).CheckResult();
@@ -1628,7 +1512,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             commandBufferCount = 1,
         };
 
-        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var commandBuffer).CheckResult();
+        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var commandBuffer).CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
@@ -1636,7 +1520,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VkCommandBufferUsageFlags.OneTimeSubmit
         };
 
-        deviceApi.vkBeginCommandBuffer(commandBuffer, &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(commandBuffer, &beginInfo).CheckResult();
 
         var barrier = new VkImageMemoryBarrier
         {
@@ -1659,7 +1543,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCmdPipelineBarrier(
+        context.DeviceApi.vkCmdPipelineBarrier(
             commandBuffer,
             VkPipelineStageFlags.TopOfPipe,
             VkPipelineStageFlags.EarlyFragmentTests |
@@ -1669,7 +1553,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             0, null,
             1, &barrier);
 
-        deviceApi.vkEndCommandBuffer(commandBuffer).CheckResult();
+        context.DeviceApi.vkEndCommandBuffer(commandBuffer).CheckResult();
 
         var submitInfo = new VkSubmitInfo
         {
@@ -1678,10 +1562,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pCommandBuffers = &commandBuffer
         };
 
-        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-        deviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
+        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
     }
 
     private void CreateDescriptorSetLayout()
@@ -1707,7 +1591,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pBindings = set0Bindings
         };
 
-        deviceApi.vkCreateDescriptorSetLayout(&set0Info, null, out descriptorSetLayout0).CheckResult();
+        context.DeviceApi.vkCreateDescriptorSetLayout(&set0Info, null, out descriptorSetLayout0).CheckResult();
 
         var set1Binding = new VkDescriptorSetLayoutBinding
         {
@@ -1724,7 +1608,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pBindings = &set1Binding
         };
 
-        deviceApi.vkCreateDescriptorSetLayout(&set1Info, null, out descriptorSetLayout1).CheckResult();
+        context.DeviceApi.vkCreateDescriptorSetLayout(&set1Info, null, out descriptorSetLayout1).CheckResult();
     }
 
     private void CreateDescriptorPool()
@@ -1743,7 +1627,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             maxSets = 256,
         };
 
-        deviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
+        context.DeviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
     }
 
     private void CreateFrameConstantBuffer()
@@ -1769,7 +1653,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pSetLayouts = pDescriptorSetLayout1,
             };
 
-            deviceApi.vkAllocateDescriptorSets(&allocInfo, pFrameDescriptorSet).CheckResult();
+            context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, pFrameDescriptorSet).CheckResult();
 
             var bufferInfo = new VkDescriptorBufferInfo
             {
@@ -1789,7 +1673,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pBufferInfo = &bufferInfo,
             };
 
-            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptorSet, 0, null);
+            context.DeviceApi.vkUpdateDescriptorSets(1, &writeDescriptorSet, 0, null);
         }
     }
 
@@ -1814,9 +1698,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private void UploadFrameConstants(FrameConstants constants)
     {
         void* mapped = null;
-        Vma.vmaMapMemory(allocator, frameConstantAllocation, &mapped).CheckResult();
+        Vma.vmaMapMemory(context.Allocator, frameConstantAllocation, &mapped).CheckResult();
         *(FrameConstants*)mapped = constants;
-        Vma.vmaUnmapMemory(allocator, frameConstantAllocation);
+        Vma.vmaUnmapMemory(context.Allocator, frameConstantAllocation);
     }
 
     // Lengyel, FGED2 Vol 2 - Tangent space calculation (7.4)
@@ -1911,7 +1795,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             usage = VmaMemoryUsage.AutoPreferDevice
         };
 
-        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
+        Vma.vmaCreateImage(context.Allocator, imageInfo, allocInfo, out var image, out _, null).CheckResult();
         return image;
     }
 
@@ -1933,7 +1817,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
+        context.DeviceApi.vkCreateImageView(&viewInfo, null, out var imageView).CheckResult();
         return imageView;
     }
 
@@ -1952,7 +1836,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             maxLod = 0.0f,
         };
 
-        deviceApi.vkCreateSampler(&cubemapSamplerInfo, null, out cubemapSampler).CheckResult();
+        context.DeviceApi.vkCreateSampler(&cubemapSamplerInfo, null, out cubemapSampler).CheckResult();
 
         var brdfSamplerInfo = new VkSamplerCreateInfo
         {
@@ -1967,7 +1851,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             maxLod = 1.0f,
         };
 
-        deviceApi.vkCreateSampler(&brdfSamplerInfo, null, out brdfLUTSampler).CheckResult();
+        context.DeviceApi.vkCreateSampler(&brdfSamplerInfo, null, out brdfLUTSampler).CheckResult();
     }
 
     public CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
@@ -2049,7 +1933,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pSetLayouts = pEquirectToCubemapDescriptorLayout,
             };
 
-            deviceApi.vkAllocateDescriptorSets(allocInfo, out var descriptorSet).CheckResult();
+            context.DeviceApi.vkAllocateDescriptorSets(allocInfo, out var descriptorSet).CheckResult();
 
             var equirectImageInfo = new VkDescriptorImageInfo
             {
@@ -2068,7 +1952,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pImageInfo = &equirectImageInfo,
             };
 
-            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
+            context.DeviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
 
             // Transition cubemap to general layout
             TransitionImageLayout(cubemapImage, VkFormat.R16G16B16A16Sfloat, VkImageLayout.Undefined,
@@ -2106,7 +1990,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(&viewInfo, null, out var storageView).CheckResult();
+        context.DeviceApi.vkCreateImageView(&viewInfo, null, out var storageView).CheckResult();
 
         var storageImageInfo = new VkDescriptorImageInfo
         {
@@ -2124,7 +2008,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pImageInfo = &storageImageInfo,
         };
 
-        deviceApi.vkUpdateDescriptorSets(1, &writeStorage, 0, null);
+        context.DeviceApi.vkUpdateDescriptorSets(1, &writeStorage, 0, null);
 
         // Allocate command buffer
         var allocInfo = new VkCommandBufferAllocateInfo
@@ -2135,7 +2019,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             commandBufferCount = 1,
         };
 
-        deviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmdBuffer).CheckResult();
+        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmdBuffer).CheckResult();
 
         var beginInfo = new VkCommandBufferBeginInfo
         {
@@ -2143,7 +2027,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             flags = VkCommandBufferUsageFlags.OneTimeSubmit,
         };
 
-        deviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
+        context.DeviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
 
         var imageMemoryBarrier = new VkImageMemoryBarrier
         {
@@ -2165,7 +2049,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCmdPipelineBarrier(cmdBuffer,
+        context.DeviceApi.vkCmdPipelineBarrier(cmdBuffer,
             VkPipelineStageFlags.TopOfPipe,
             VkPipelineStageFlags.ComputeShader,
             VkDependencyFlags.None,
@@ -2174,19 +2058,20 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             1, &imageMemoryBarrier);
 
 
-        deviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, equirectToCubemapPipeline);
-        deviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute, equirectToCubemapPipelineLayout,
+        context.DeviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, equirectToCubemapPipeline);
+        context.DeviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute,
+            equirectToCubemapPipelineLayout,
             0, 1, &descriptorSet, 0, null);
 
         var faceIndexData = faceIndex;
-        deviceApi.vkCmdPushConstants(cmdBuffer, equirectToCubemapPipelineLayout, VkShaderStageFlags.Compute, 0,
+        context.DeviceApi.vkCmdPushConstants(cmdBuffer, equirectToCubemapPipelineLayout, VkShaderStageFlags.Compute, 0,
             (uint)sizeof(int), &faceIndexData);
 
         uint groupSize = 8;
         uint numGroups = (faceSize + groupSize - 1) / groupSize;
-        deviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
+        context.DeviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
 
-        deviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
+        context.DeviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
 
         var submitInfo = new VkSubmitInfo
         {
@@ -2195,11 +2080,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             pCommandBuffers = &cmdBuffer,
         };
 
-        deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-        deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
-        deviceApi.vkDestroyImageView(storageView, null);
+        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
+        context.DeviceApi.vkDestroyImageView(storageView, null);
     }
 
     public void GenerateBRDFLUT()
@@ -2226,7 +2111,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             usage = VmaMemoryUsage.AutoPreferDevice
         };
 
-        Vma.vmaCreateImage(allocator, imageInfo, allocInfo, out brdfLUTImage, out _, null).CheckResult();
+        Vma.vmaCreateImage(context.Allocator, imageInfo, allocInfo, out brdfLUTImage, out _, null).CheckResult();
 
         var viewInfo = new VkImageViewCreateInfo
         {
@@ -2244,7 +2129,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         };
 
-        deviceApi.vkCreateImageView(&viewInfo, null, out brdfLUTImageView).CheckResult();
+        context.DeviceApi.vkCreateImageView(&viewInfo, null, out brdfLUTImageView).CheckResult();
 
         TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.Undefined, VkImageLayout.General);
 
@@ -2259,7 +2144,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             };
 
             VkDescriptorSet brdfLutDescriptorSet;
-            deviceApi.vkAllocateDescriptorSets(&allocDescInfo, &brdfLutDescriptorSet).CheckResult();
+            context.DeviceApi.vkAllocateDescriptorSets(&allocDescInfo, &brdfLutDescriptorSet).CheckResult();
 
             var storageImageInfo = new VkDescriptorImageInfo
             {
@@ -2277,7 +2162,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pImageInfo = &storageImageInfo,
             };
 
-            deviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
+            context.DeviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
 
             var allocCmdInfo = new VkCommandBufferAllocateInfo
             {
@@ -2287,7 +2172,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 commandBufferCount = 1,
             };
 
-            deviceApi.vkAllocateCommandBuffer(&allocCmdInfo, out var cmdBuffer).CheckResult();
+            context.DeviceApi.vkAllocateCommandBuffer(&allocCmdInfo, out var cmdBuffer).CheckResult();
 
             var beginInfo = new VkCommandBufferBeginInfo
             {
@@ -2295,17 +2180,17 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 flags = VkCommandBufferUsageFlags.OneTimeSubmit,
             };
 
-            deviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
+            context.DeviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
 
-            deviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipeline);
-            deviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipelineLayout,
+            context.DeviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipeline);
+            context.DeviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute, brdfLutPipelineLayout,
                 0, 1, &brdfLutDescriptorSet, 0, null);
 
             uint groupSize = 8;
             uint numGroups = (lutSize + groupSize - 1) / groupSize;
-            deviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
+            context.DeviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
 
-            deviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
+            context.DeviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
 
             var submitInfo = new VkSubmitInfo
             {
@@ -2314,10 +2199,10 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 pCommandBuffers = &cmdBuffer,
             };
 
-            deviceApi.vkQueueSubmit(graphicsQueue, submitInfo, VkFence.Null).CheckResult();
-            deviceApi.vkQueueWaitIdle(graphicsQueue).CheckResult();
+            context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
+            context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
 
-            deviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
+            context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
 
             TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.General,
                 VkImageLayout.ShaderReadOnlyOptimal);
