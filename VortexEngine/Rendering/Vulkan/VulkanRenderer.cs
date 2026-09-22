@@ -31,10 +31,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private List<CubemapData> cubemapTextures = [];
     private int currentFrame = 0;
 
-    private VkImage depthImage;
-    private VmaAllocation depthImageAllocation;
-    private VkImageView depthImageView;
-
     private VkDescriptorPool descriptorPool;
     private VkDescriptorSetLayout descriptorSetLayout0;
     private VkDescriptorSetLayout descriptorSetLayout1;
@@ -60,12 +56,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     // Debug Mesh Stuff
     private float rotation;
-    private VkSwapchainKHR swapchain;
-    private VkExtent2D swapchainExtent;
-    private VkFormat swapchainImageFormat;
-    private VkImageView[] swapchainImageViews = null!;
 
-    private VkImage[] swapchainImages = null!;
+    private SwapchainManager swapchain;
 
     private SyncManager sync;
     private List<VkImageView> textureImageViews = [];
@@ -75,11 +67,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
         context = new VulkanContext(surfaceProvider);
+        swapchain = new SwapchainManager(context, width, height);
         sync = new SyncManager(context);
 
-        swapchainExtent = new VkExtent2D { width = width, height = height };
-
-        CreateSwapchain(width, height);
         CreateShaders();
         CreateEquirectToCubemapPipeline();
         CreateCubemapSamplers();
@@ -107,8 +97,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
         }
 
-        context.DeviceApi.vkDestroyImageView(depthImageView, null);
-
         context.DeviceApi.vkDestroyDescriptorPool(descriptorPool, null);
         context.DeviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
 
@@ -134,133 +122,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             Vma.vmaDestroyImage(context.Allocator, brdfLUTImage, VmaAllocation.Null);
         }
 
-        Vma.vmaDestroyImage(context.Allocator, depthImage, depthImageAllocation);
         Vma.vmaDestroyBuffer(context.Allocator, frameConstantBuffer, frameConstantAllocation);
 
         sync.Dispose();
 
         context.Dispose();
-    }
-
-    private void CreateSwapchain(uint width, uint height)
-    {
-        context.InstanceApi
-            .vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.PhysicalDevice, context.Surface, out var capabilities)
-            .CheckResult();
-        uint formatCount = 0;
-        context.InstanceApi
-            .vkGetPhysicalDeviceSurfaceFormatsKHR(context.PhysicalDevice, context.Surface, &formatCount, null)
-            .CheckResult();
-        var formats = new VkSurfaceFormatKHR[formatCount];
-        context.InstanceApi.vkGetPhysicalDeviceSurfaceFormatsKHR(context.PhysicalDevice, context.Surface, formats)
-            .CheckResult();
-
-        // TODO: Better format picking :3
-        var surfaceFormat = formats[0];
-        swapchainImageFormat = surfaceFormat.format;
-        imageCount = Math.Max(2, capabilities.minImageCount);
-
-        swapchainExtent.width = Math.Min(Math.Max(width, capabilities.minImageExtent.width),
-            capabilities.maxImageExtent.width);
-        swapchainExtent.height = Math.Min(Math.Max(height, capabilities.minImageExtent.height),
-            capabilities.maxImageExtent.height);
-
-        var createInfo = new VkSwapchainCreateInfoKHR
-        {
-            sType = VkStructureType.SwapchainCreateInfoKHR,
-            surface = context.Surface,
-            minImageCount = imageCount,
-            imageFormat = surfaceFormat.format,
-            imageColorSpace = surfaceFormat.colorSpace,
-            imageExtent = swapchainExtent,
-            imageArrayLayers = 1,
-            imageUsage = VkImageUsageFlags.ColorAttachment,
-            imageSharingMode = VkSharingMode.Exclusive,
-            preTransform = capabilities.currentTransform,
-            compositeAlpha = VkCompositeAlphaFlagsKHR.Opaque,
-            presentMode = VkPresentModeKHR.Fifo,
-            clipped = true,
-        };
-
-        context.DeviceApi.vkCreateSwapchainKHR(&createInfo, out swapchain).CheckResult();
-
-        uint swapchainImageCount = 0;
-        context.DeviceApi.vkGetSwapchainImagesKHR(swapchain, &swapchainImageCount, null).CheckResult();
-        swapchainImages = new VkImage[swapchainImageCount];
-        context.DeviceApi.vkGetSwapchainImagesKHR(swapchain, swapchainImages).CheckResult();
-
-        swapchainImageViews = new VkImageView[swapchainImages.Length];
-        for (int i = 0; i < swapchainImages.Length; i++)
-        {
-            var createViewInfo = new VkImageViewCreateInfo
-            {
-                sType = VkStructureType.ImageViewCreateInfo,
-                image = swapchainImages[i],
-                viewType = VkImageViewType.Image2D,
-                format = surfaceFormat.format,
-                components = new VkComponentMapping
-                {
-                    r = VkComponentSwizzle.Identity,
-                    g = VkComponentSwizzle.Identity,
-                    b = VkComponentSwizzle.Identity,
-                    a = VkComponentSwizzle.Identity,
-                },
-                subresourceRange = new VkImageSubresourceRange
-                {
-                    aspectMask = VkImageAspectFlags.Color,
-                    baseMipLevel = 0,
-                    levelCount = 1,
-                    baseArrayLayer = 0,
-                    layerCount = 1,
-                }
-            };
-
-            VkImageView imageView;
-            context.DeviceApi.vkCreateImageView(&createViewInfo, null, &imageView).CheckResult();
-            swapchainImageViews[i] = imageView;
-        }
-
-        // Depth image 
-        var depthImageInfo = new VkImageCreateInfo
-        {
-            sType = VkStructureType.ImageCreateInfo,
-            imageType = VkImageType.Image2D,
-            format = VkFormat.D32Sfloat,
-            extent = new VkExtent3D { width = swapchainExtent.width, height = swapchainExtent.height, depth = 1 },
-            mipLevels = 1,
-            arrayLayers = 1,
-            samples = VkSampleCountFlags.Count1,
-            tiling = VkImageTiling.Optimal,
-            usage = VkImageUsageFlags.DepthStencilAttachment,
-            sharingMode = VkSharingMode.Exclusive,
-            initialLayout = VkImageLayout.Undefined,
-        };
-
-        var allocInfo = new VmaAllocationCreateInfo
-        {
-            usage = VmaMemoryUsage.AutoPreferDevice,
-        };
-
-        Vma.vmaCreateImage(context.Allocator, depthImageInfo, allocInfo, out depthImage, out depthImageAllocation)
-            .CheckResult();
-
-        var viewInfo = new VkImageViewCreateInfo
-        {
-            sType = VkStructureType.ImageViewCreateInfo,
-            image = depthImage,
-            viewType = VkImageViewType.Image2D,
-            format = VkFormat.D32Sfloat,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Depth,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = 0,
-                layerCount = 1,
-            }
-        };
-
-        context.DeviceApi.vkCreateImageView(&viewInfo, null, out depthImageView).CheckResult();
     }
 
     private void CreateShaders()
@@ -383,9 +249,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var viewport = new VkViewport
         {
             x = 0.0f,
-            y = swapchainExtent.height,
-            width = (float)swapchainExtent.width,
-            height = (float)-swapchainExtent.height,
+            y = swapchain.Extent.height,
+            width = (float)swapchain.Extent.width,
+            height = (float)-swapchain.Extent.height,
             minDepth = 0.0f,
             maxDepth = 1.0f,
         };
@@ -393,7 +259,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var scissor = new VkRect2D
         {
             offset = new VkOffset2D(0, 0),
-            extent = swapchainExtent
+            extent = swapchain.Extent
         };
 
         var viewportState = new VkPipelineViewportStateCreateInfo
@@ -447,7 +313,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         colorBlending.blendConstants[2] = 0.0f;
         colorBlending.blendConstants[3] = 0.0f;
 
-        var colorFormat = swapchainImageFormat;
+        var colorFormat = swapchain.ImageFormat;
 
         var pipelineRenderingCreateInfo = new VkPipelineRenderingCreateInfo
         {
@@ -637,7 +503,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private unsafe void CreateCommandBuffers()
     {
-        commandBuffers = new VkCommandBuffer[swapchainImages.Length];
+        commandBuffers = new VkCommandBuffer[swapchain.Images.Length];
         var allocInfo = new VkCommandBufferAllocateInfo
         {
             sType = VkStructureType.CommandBufferAllocateInfo,
@@ -660,8 +526,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var renderDone = sync.GetRenderFinishedSemaphore(currentFrame);
         var fence = sync.GetInFlightFence(currentFrame);
 
-        context.DeviceApi.vkAcquireNextImageKHR(swapchain, ulong.MaxValue, imageAvail, VkFence.Null,
-            out var imageIndex).CheckResult();
+        var imageIndex = swapchain.AcquireNextImage(imageAvail);
 
         sync.ResetFrameFence(currentFrame);
 
@@ -678,7 +543,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var colorAttachment = new VkRenderingAttachmentInfo
         {
             sType = VkStructureType.RenderingAttachmentInfo,
-            imageView = swapchainImageViews[imageIndex],
+            imageView = swapchain.ImageViews[imageIndex],
             imageLayout = VkImageLayout.ColorAttachmentOptimal,
             clearValue = new VkClearValue { color = new VkClearColorValue(0.0f, 0.0f, 0.0f, 1.0f) },
             loadOp = VkAttachmentLoadOp.Clear,
@@ -688,7 +553,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var depthAttachment = new VkRenderingAttachmentInfo
         {
             sType = VkStructureType.RenderingAttachmentInfo,
-            imageView = depthImageView,
+            imageView = swapchain.DepthImageView,
             imageLayout = VkImageLayout.DepthStencilAttachmentOptimal,
             clearValue = new VkClearValue { depthStencil = new VkClearDepthStencilValue(depth: 1.0f, stencil: 0) },
             loadOp = VkAttachmentLoadOp.Clear,
@@ -698,7 +563,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         var renderingInfo = new VkRenderingInfo
         {
             sType = VkStructureType.RenderingInfo,
-            renderArea = new VkRect2D { offset = new VkOffset2D(0, 0), extent = swapchainExtent },
+            renderArea = new VkRect2D { offset = new VkOffset2D(0, 0), extent = swapchain.Extent },
             layerCount = 1,
             colorAttachmentCount = 1,
             pColorAttachments = &colorAttachment,
@@ -723,7 +588,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
                 var projection = Matrix4x4.CreatePerspectiveFieldOfView(
                     MathF.PI / 4.0f,
-                    swapchainExtent.width / (float)swapchainExtent.height,
+                    swapchain.Extent.width / (float)swapchain.Extent.height,
                     0.1f,
                     100.0f
                 );
@@ -799,21 +664,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, fence).CheckResult();
         }
 
-        fixed (VkSemaphore* pSignalSemaphores = signalSemaphores)
-        fixed (VkSwapchainKHR* pSwapchain = &swapchain)
-        {
-            var presentInfo = new VkPresentInfoKHR
-            {
-                sType = VkStructureType.PresentInfoKHR,
-                waitSemaphoreCount = 1,
-                pWaitSemaphores = pSignalSemaphores,
-                swapchainCount = 1,
-                pSwapchains = pSwapchain,
-                pImageIndices = &imageIndex,
-            };
-
-            context.DeviceApi.vkQueuePresentKHR(context.GraphicsQueue, &presentInfo).CheckResult();
-        }
+        swapchain.Present(renderDone, imageIndex);
 
         currentFrame = (currentFrame + 1) % MaxFramesInFlight;
         rotation = (rotation + 0.01f) % (2.0f * MathF.PI);
@@ -1508,7 +1359,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             newLayout = VkImageLayout.DepthStencilAttachmentOptimal,
             srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            image = depthImage,
+            image = swapchain.DepthImage,
             subresourceRange = new VkImageSubresourceRange
             {
                 aspectMask = VkImageAspectFlags.Depth,
