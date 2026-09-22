@@ -16,7 +16,10 @@ internal class Program
         {
             engine.Initialize(window);
 
-            var meshBytes = File.ReadAllBytes("VortexEditor/Assets/Box.glb");
+            var hdrData = File.ReadAllBytes("VortexEditor/Assets/Workshop.exr");
+            var cubemapHandle = engine.Renderer.LoadEquirectangularHDRI(hdrData, 2048, 1024);
+
+            var meshBytes = File.ReadAllBytes("VortexEditor/Assets/MetalRoughSpheres.glb");
             var meshHandle = engine.Renderer.LoadMesh(meshBytes);
 
             var clock = Stopwatch.StartNew();
