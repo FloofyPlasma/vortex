@@ -67,7 +67,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private VkPhysicalDevice physicalDevice;
     private VkPipelineLayout pipelineLayout;
-    private uint presentQueueFamily;
     private VkSemaphore[] renderFinishedSemaphores = null!;
 
     // Debug Mesh Stuff
@@ -82,10 +81,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private List<VkImageView> textureImageViews = [];
     private List<VkImage> textureImages = [];
     private List<VkSampler> textureSamplers = [];
-    private VkShaderModule triangleFragmentShader;
-    private VkPipeline trianglePipeline;
-
-    private VkShaderModule triangleVertexShader;
 
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
@@ -108,7 +103,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         CreateFrameConstantBuffer();
         CreateFrameDescriptorSet();
         CreatePipelineLayout();
-        CreateTriangleGraphicsPipeline();
         CreateMeshGraphicsPipeline();
         CreateCommandPool();
         TransitionDepthImage();
@@ -221,7 +215,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
             instanceApi.vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, out var presentSupport)
                 .CheckResult();
-            if (presentSupport) presentQueueFamily = i;
         }
     }
 
@@ -382,15 +375,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateShaders()
     {
-        var triangleVertexCode = ShaderCompiler.LoadAndCompileGlsl(
-            "VortexEngine/Rendering/Vulkan/Shaders/triangle.vert",
-            ShaderKind.VertexShader);
-        triangleVertexShader = ShaderCompiler.CreateShaderModule(deviceApi, triangleVertexCode, "triangle.vert");
-        var triangleFragmentCode = ShaderCompiler.LoadAndCompileGlsl(
-            "VortexEngine/Rendering/Vulkan/Shaders/triangle.frag",
-            ShaderKind.FragmentShader);
-        triangleFragmentShader = ShaderCompiler.CreateShaderModule(deviceApi, triangleFragmentCode, "triangle.frag");
-
         var meshVertexCode = ShaderCompiler.LoadAndCompileGlsl("VortexEngine/Rendering/Vulkan/Shaders/mesh.vert",
             ShaderKind.VertexShader);
         meshVertexShader = ShaderCompiler.CreateShaderModule(deviceApi, meshVertexCode, "mesh.vert");
@@ -429,154 +413,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         };
 
         deviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
-    }
-
-    private void CreateTriangleGraphicsPipeline()
-    {
-        VkUtf8ReadOnlyString pVertexShaderStageName = "main"u8;
-        var vertexShaderStage = new VkPipelineShaderStageCreateInfo
-        {
-            sType = VkStructureType.PipelineShaderStageCreateInfo,
-            stage = VkShaderStageFlags.Vertex,
-            module = triangleVertexShader,
-            pName = pVertexShaderStageName
-        };
-
-        VkUtf8String pFragmentShaderStageName = "main"u8;
-        var fragmentShaderStage = new VkPipelineShaderStageCreateInfo
-        {
-            sType = VkStructureType.PipelineShaderStageCreateInfo,
-            stage = VkShaderStageFlags.Fragment,
-            module = triangleFragmentShader,
-            pName = pFragmentShaderStageName
-        };
-
-        var shaderStages = new[] { vertexShaderStage, fragmentShaderStage };
-
-        var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
-        {
-            sType = VkStructureType.PipelineVertexInputStateCreateInfo,
-            vertexBindingDescriptionCount = 0,
-            vertexAttributeDescriptionCount = 0
-        };
-
-        var inputAssembly = new VkPipelineInputAssemblyStateCreateInfo
-        {
-            sType = VkStructureType.PipelineInputAssemblyStateCreateInfo,
-            topology = VkPrimitiveTopology.TriangleList,
-            primitiveRestartEnable = false
-        };
-
-        var viewport = new VkViewport
-        {
-            x = 0.0f,
-            y = 0.0f,
-            width = (float)swapchainExtent.width,
-            height = (float)swapchainExtent.height,
-            minDepth = 0.0f,
-            maxDepth = 1.0f,
-        };
-
-        var scissor = new VkRect2D
-        {
-            offset = new VkOffset2D(0, 0),
-            extent = swapchainExtent
-        };
-
-        var viewportState = new VkPipelineViewportStateCreateInfo
-        {
-            sType = VkStructureType.PipelineViewportStateCreateInfo,
-            viewportCount = 1,
-            pViewports = &viewport,
-            scissorCount = 1,
-            pScissors = &scissor
-        };
-
-        var rasterizer = new VkPipelineRasterizationStateCreateInfo
-        {
-            sType = VkStructureType.PipelineRasterizationStateCreateInfo,
-            depthClampEnable = false,
-            rasterizerDiscardEnable = false,
-            polygonMode = VkPolygonMode.Fill,
-            lineWidth = 1.0f,
-            cullMode = VkCullModeFlags.Back,
-            frontFace = VkFrontFace.Clockwise,
-            depthBiasEnable = false
-        };
-
-        var multisampling = new VkPipelineMultisampleStateCreateInfo
-        {
-            sType = VkStructureType.PipelineMultisampleStateCreateInfo,
-            sampleShadingEnable = false,
-            rasterizationSamples = VkSampleCountFlags.Count1
-        };
-
-        var colorBlendAttachment = new VkPipelineColorBlendAttachmentState
-        {
-            colorWriteMask = VkColorComponentFlags.R | VkColorComponentFlags.G | VkColorComponentFlags.B |
-                             VkColorComponentFlags.A,
-            blendEnable = false
-        };
-
-        var colorBlending = new VkPipelineColorBlendStateCreateInfo
-        {
-            sType = VkStructureType.PipelineColorBlendStateCreateInfo,
-            logicOpEnable = false,
-            logicOp = VkLogicOp.Copy,
-            attachmentCount = 1,
-            pAttachments = &colorBlendAttachment
-        };
-
-        colorBlending.blendConstants[0] = 0.0f;
-        colorBlending.blendConstants[1] = 0.0f;
-        colorBlending.blendConstants[2] = 0.0f;
-        colorBlending.blendConstants[3] = 0.0f;
-
-        var colorFormat = swapchainImageFormat;
-        var pipelineRenderingCreateInfo = new VkPipelineRenderingCreateInfo
-        {
-            sType = VkStructureType.PipelineRenderingCreateInfo,
-            colorAttachmentCount = 1,
-            pColorAttachmentFormats = &colorFormat
-        };
-
-        var depthStencil = new VkPipelineDepthStencilStateCreateInfo
-        {
-            sType = VkStructureType.PipelineDepthStencilStateCreateInfo,
-            depthTestEnable = true,
-            depthWriteEnable = true,
-            depthCompareOp = VkCompareOp.Less,
-            depthBoundsTestEnable = false,
-            stencilTestEnable = false,
-        };
-
-        var pipelineInfo = new VkGraphicsPipelineCreateInfo
-        {
-            sType = VkStructureType.GraphicsPipelineCreateInfo,
-            stageCount = 2,
-            pVertexInputState = &vertexInputInfo,
-            pInputAssemblyState = &inputAssembly,
-            pViewportState = &viewportState,
-            pRasterizationState = &rasterizer,
-            pMultisampleState = &multisampling,
-            pColorBlendState = &colorBlending,
-            layout = pipelineLayout,
-            pNext = &pipelineRenderingCreateInfo,
-            pDepthStencilState = &depthStencil,
-        };
-
-        fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
-        {
-            pipelineInfo.pStages = pShaderStages;
-
-            var pipelines = new VkPipeline[1];
-            fixed (VkPipeline* pPipelines = pipelines)
-            {
-                deviceApi.vkCreateGraphicsPipelines(VkPipelineCache.Null, 1, &pipelineInfo, pPipelines).CheckResult();
-            }
-
-            trianglePipeline = pipelines[0];
-        }
     }
 
     private void CreateMeshGraphicsPipeline()
@@ -637,12 +473,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             format = VkFormat.R32G32B32A32Sfloat,
             offset = (uint)Marshal.OffsetOf<Vertex>(nameof(Vertex.Tangent))
         };
-
-        Console.WriteLine($"Position offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Position))}");
-        Console.WriteLine($"Normal offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Normal))}");
-        Console.WriteLine($"TexCoord offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.TexCoord))}");
-        Console.WriteLine($"Tangent offset: {Marshal.OffsetOf<Vertex>(nameof(Vertex.Tangent))}");
-        Console.WriteLine($"Stride: {sizeof(Vertex)}");
 
         var vertexInputInfo = new VkPipelineVertexInputStateCreateInfo
         {
@@ -1010,8 +840,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         deviceApi.vkCmdBeginRendering(commandBuffers[imageIndex], &renderingInfo);
 
 
-        deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, trianglePipeline);
-
         if (meshes.Count > 0)
         {
             {
@@ -1071,12 +899,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                     deviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], primitive.IndexCount, 1, 0, 0, 0);
                 }
             }
-        }
-        else
-        {
-            deviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics, trianglePipeline);
-
-            deviceApi.vkCmdDraw(commandBuffers[imageIndex], 3, 1, 0, 0);
         }
 
         deviceApi.vkCmdEndRendering(commandBuffers[imageIndex]);
@@ -1480,9 +1302,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             }
 
             deviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
-
-            Console.WriteLine($"Binding cubemap: ID={0}, View={cubemapTextures[0].Views[0].Handle}");
-            Console.WriteLine($"Binding BRDF LUT: View={brdfLUTImageView.Handle}");
 
             primitive.DescriptorSet = descriptorSet;
         }
@@ -2209,15 +2028,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 Width = cubeSize,
             });
 
-            Console.WriteLine(
-                $"Loaded HDRI cubemap: {cubeSize}x{cubeSize}, 6 faces");
-
             return new CubemapHandle(
                 (uint)(cubemapTextures.Count - 1));
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to load HDRI: {ex.Message}");
             return null;
         }
     }
@@ -2506,8 +2321,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
             TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.General,
                 VkImageLayout.ShaderReadOnlyOptimal);
-
-            Console.WriteLine("Generated BRDF LUT: 512x512");
         }
     }
 }
