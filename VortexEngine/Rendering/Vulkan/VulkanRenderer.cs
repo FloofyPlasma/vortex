@@ -29,8 +29,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private int currentFrame = 0;
 
     private VkDescriptorPool descriptorPool;
-    private VkDescriptorSetLayout descriptorSetLayout0;
-    private VkDescriptorSetLayout descriptorSetLayout1;
 
     private VmaAllocation frameConstantAllocation;
 
@@ -40,8 +38,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private uint imageCount;
 
     private List<Mesh> meshes = [];
-
-    private VkPipelineLayout pipelineLayout;
 
     // Debug Mesh Stuff
     private float rotation;
@@ -63,11 +59,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         shaderManager = new ShaderManager(context, swapchain);
 
         CreateCubemapSamplers();
-        CreateDescriptorSetLayout();
-        CreateDescriptorPool();
         CreateFrameConstantBuffer();
+        CreateDescriptorPool();
         CreateFrameDescriptorSet();
-        CreatePipelineLayout();
         CreateCommandPool();
         TransitionDepthImage();
         CreateCommandBuffers();
@@ -84,9 +78,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 Vma.vmaDestroyBuffer(context.Allocator, primitive.IndexBuffer, primitive.IndexAllocation);
             }
         }
-
-        context.DeviceApi.vkDestroyDescriptorPool(descriptorPool, null);
-        context.DeviceApi.vkDestroyDescriptorSetLayout(descriptorSetLayout0, null);
 
         foreach (var cubemap in cubemapTextures)
         {
@@ -116,31 +107,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         sync.Dispose();
         swapchain.Dispose();
         context.Dispose();
-    }
-
-    private void CreatePipelineLayout()
-    {
-        var layouts = stackalloc VkDescriptorSetLayout[2];
-        layouts[0] = descriptorSetLayout0;
-        layouts[1] = descriptorSetLayout1;
-
-        var pushConstantRange = new VkPushConstantRange
-        {
-            stageFlags = VkShaderStageFlags.Vertex,
-            offset = 0,
-            size = (uint)sizeof(Matrix4x4) * 2
-        };
-
-        var pipelineLayoutInfo = new VkPipelineLayoutCreateInfo
-        {
-            sType = VkStructureType.PipelineLayoutCreateInfo,
-            setLayoutCount = 2,
-            pSetLayouts = layouts,
-            pushConstantRangeCount = 1,
-            pPushConstantRanges = &pushConstantRange,
-        };
-
-        context.DeviceApi.vkCreatePipelineLayout(&pipelineLayoutInfo, null, out pipelineLayout).CheckResult();
     }
 
     private void CreateCommandPool()
@@ -255,7 +221,8 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                     shaderManager.GetGraphicsPipeline("pbr_mesh"));
 
                 var pushData = new PushConstants { Mvp = mvp, Model = model };
-                context.DeviceApi.vkCmdPushConstants(commandBuffers[imageIndex], pipelineLayout,
+                context.DeviceApi.vkCmdPushConstants(commandBuffers[imageIndex],
+                    shaderManager.GetPipelineLayout("pbr_mesh"),
                     VkShaderStageFlags.Vertex, 0,
                     (uint)sizeof(PushConstants), &pushData);
 
@@ -273,13 +240,13 @@ internal sealed unsafe class VulkanRenderer : IDisposable
                 fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
                 {
                     context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
-                        pipelineLayout, 1, 1, pFrameDescriptorSet, 0, null);
+                        shaderManager.GetPipelineLayout("pbr_mesh"), 1, 1, pFrameDescriptorSet, 0, null);
                 }
 
                 foreach (var primitive in mesh.Primitives)
                 {
                     context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
-                        pipelineLayout, 0, 1, &primitive.DescriptorSet, 0, null);
+                        shaderManager.GetPipelineLayout("pbr_mesh"), 0, 1, &primitive.DescriptorSet, 0, null);
 
                     context.DeviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer,
                         offset);
@@ -584,92 +551,111 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return normals;
     }
 
+    private void CreateDescriptorPool()
+    {
+        var poolSize = new VkDescriptorPoolSize
+        {
+            type = VkDescriptorType.CombinedImageSampler,
+            descriptorCount = 256,
+        };
+
+        var createInfo = new VkDescriptorPoolCreateInfo
+        {
+            sType = VkStructureType.DescriptorPoolCreateInfo,
+            poolSizeCount = 1,
+            pPoolSizes = &poolSize,
+            maxSets = 256,
+        };
+
+        context.DeviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
+    }
+
     private void CreatePrimitiveDescriptorSet(ref Primitive primitive, Material material)
     {
-        fixed (VkDescriptorSetLayout* pDescriptorSetLayout = &descriptorSetLayout0)
+        var descriptorLayout = shaderManager.GetDescriptorSetLayout("pbr_mesh", 0);
+
+
+        var allocInfo = new VkDescriptorSetAllocateInfo
         {
-            var allocInfo = new VkDescriptorSetAllocateInfo
+            sType = VkStructureType.DescriptorSetAllocateInfo,
+            descriptorPool = descriptorPool,
+            descriptorSetCount = 1,
+            pSetLayouts = &descriptorLayout,
+        };
+
+        VkDescriptorSet descriptorSet;
+        context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
+
+        var imageInfos = stackalloc VkDescriptorImageInfo[7];
+
+        imageInfos[0] = new VkDescriptorImageInfo
+        {
+            sampler = textureSamplers[(int)material.Albedo.Id],
+            imageView = textureImageViews[(int)material.Albedo.Id],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[1] = new VkDescriptorImageInfo
+        {
+            sampler = textureSamplers[(int)material.Normal.Id],
+            imageView = textureImageViews[(int)material.Normal.Id],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[2] = new VkDescriptorImageInfo
+        {
+            sampler = textureSamplers[(int)material.MetallicRoughness.Id],
+            imageView = textureImageViews[(int)material.MetallicRoughness.Id],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[3] = new VkDescriptorImageInfo
+        {
+            sampler = textureSamplers[(int)material.Occlusion.Id],
+            imageView = textureImageViews[(int)material.Occlusion.Id],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[4] = new VkDescriptorImageInfo
+        {
+            sampler = textureSamplers[(int)material.Emissive.Id],
+            imageView = textureImageViews[(int)material.Emissive.Id],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[5] = new VkDescriptorImageInfo
+        {
+            sampler = cubemapSampler,
+            imageView = cubemapTextures[0].Views[0],
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        imageInfos[6] = new VkDescriptorImageInfo
+        {
+            sampler = brdfLUTSampler,
+            imageView = brdfLUTImageView,
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
+
+        var writeDescriptorSets = stackalloc VkWriteDescriptorSet[7];
+
+        for (var i = 0; i < 7; i++)
+        {
+            writeDescriptorSets[i] = new VkWriteDescriptorSet
             {
-                sType = VkStructureType.DescriptorSetAllocateInfo,
-                descriptorPool = descriptorPool,
-                descriptorSetCount = 1,
-                pSetLayouts = pDescriptorSetLayout,
+                sType = VkStructureType.WriteDescriptorSet,
+                dstSet = descriptorSet,
+                dstBinding = (uint)i,
+                dstArrayElement = 0,
+                descriptorCount = 1,
+                descriptorType = VkDescriptorType.CombinedImageSampler,
+                pImageInfo = &imageInfos[i],
             };
-
-            VkDescriptorSet descriptorSet;
-            context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
-
-            var imageInfos = stackalloc VkDescriptorImageInfo[7];
-
-            imageInfos[0] = new VkDescriptorImageInfo
-            {
-                sampler = textureSamplers[(int)material.Albedo.Id],
-                imageView = textureImageViews[(int)material.Albedo.Id],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[1] = new VkDescriptorImageInfo
-            {
-                sampler = textureSamplers[(int)material.Normal.Id],
-                imageView = textureImageViews[(int)material.Normal.Id],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[2] = new VkDescriptorImageInfo
-            {
-                sampler = textureSamplers[(int)material.MetallicRoughness.Id],
-                imageView = textureImageViews[(int)material.MetallicRoughness.Id],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[3] = new VkDescriptorImageInfo
-            {
-                sampler = textureSamplers[(int)material.Occlusion.Id],
-                imageView = textureImageViews[(int)material.Occlusion.Id],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[4] = new VkDescriptorImageInfo
-            {
-                sampler = textureSamplers[(int)material.Emissive.Id],
-                imageView = textureImageViews[(int)material.Emissive.Id],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[5] = new VkDescriptorImageInfo
-            {
-                sampler = cubemapSampler,
-                imageView = cubemapTextures[0].Views[0],
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            imageInfos[6] = new VkDescriptorImageInfo
-            {
-                sampler = brdfLUTSampler,
-                imageView = brdfLUTImageView,
-                imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-            };
-
-            var writeDescriptorSets = stackalloc VkWriteDescriptorSet[7];
-
-            for (var i = 0; i < 7; i++)
-            {
-                writeDescriptorSets[i] = new VkWriteDescriptorSet
-                {
-                    sType = VkStructureType.WriteDescriptorSet,
-                    dstSet = descriptorSet,
-                    dstBinding = (uint)i,
-                    dstArrayElement = 0,
-                    descriptorCount = 1,
-                    descriptorType = VkDescriptorType.CombinedImageSampler,
-                    pImageInfo = &imageInfos[i],
-                };
-            }
-
-            context.DeviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
-
-            primitive.DescriptorSet = descriptorSet;
         }
+
+        context.DeviceApi.vkUpdateDescriptorSets(7, writeDescriptorSets, 0, null);
+
+        primitive.DescriptorSet = descriptorSet;
     }
 
     private TextureHandle LoadDefaultTexture(Vector4 color)
@@ -1049,68 +1035,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &commandBuffer);
     }
 
-    private void CreateDescriptorSetLayout()
-    {
-        var set0Bindings = stackalloc VkDescriptorSetLayoutBinding[7];
-
-        for (var i = 0; i < 7; i++)
-        {
-            set0Bindings[i] = new VkDescriptorSetLayoutBinding
-            {
-                binding = (uint)i,
-                descriptorType = VkDescriptorType.CombinedImageSampler,
-                descriptorCount = 1,
-                stageFlags = VkShaderStageFlags.Fragment
-            };
-        }
-
-
-        var set0Info = new VkDescriptorSetLayoutCreateInfo
-        {
-            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
-            bindingCount = 7,
-            pBindings = set0Bindings
-        };
-
-        context.DeviceApi.vkCreateDescriptorSetLayout(&set0Info, null, out descriptorSetLayout0).CheckResult();
-
-        var set1Binding = new VkDescriptorSetLayoutBinding
-        {
-            binding = 0,
-            descriptorType = VkDescriptorType.UniformBuffer,
-            descriptorCount = 1,
-            stageFlags = VkShaderStageFlags.Fragment
-        };
-
-        var set1Info = new VkDescriptorSetLayoutCreateInfo
-        {
-            sType = VkStructureType.DescriptorSetLayoutCreateInfo,
-            bindingCount = 1,
-            pBindings = &set1Binding
-        };
-
-        context.DeviceApi.vkCreateDescriptorSetLayout(&set1Info, null, out descriptorSetLayout1).CheckResult();
-    }
-
-    private void CreateDescriptorPool()
-    {
-        var poolSize = new VkDescriptorPoolSize
-        {
-            type = VkDescriptorType.CombinedImageSampler,
-            descriptorCount = 256,
-        };
-
-        var createInfo = new VkDescriptorPoolCreateInfo
-        {
-            sType = VkStructureType.DescriptorPoolCreateInfo,
-            poolSizeCount = 1,
-            pPoolSizes = &poolSize,
-            maxSets = 256,
-        };
-
-        context.DeviceApi.vkCreateDescriptorPool(&createInfo, null, out descriptorPool).CheckResult();
-    }
-
     private void CreateFrameConstantBuffer()
     {
         frameConstantBuffer = CreateBuffer(
@@ -1123,15 +1047,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     private void CreateFrameDescriptorSet()
     {
+        var descriptorSetLayout1 = shaderManager.GetDescriptorSetLayout("pbr_mesh", 1);
+
         fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
-        fixed (VkDescriptorSetLayout* pDescriptorSetLayout1 = &descriptorSetLayout1)
         {
             var allocInfo = new VkDescriptorSetAllocateInfo
             {
                 sType = VkStructureType.DescriptorSetAllocateInfo,
                 descriptorPool = descriptorPool,
                 descriptorSetCount = 1,
-                pSetLayouts = pDescriptorSetLayout1,
+                pSetLayouts = &descriptorSetLayout1,
             };
 
             context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, pFrameDescriptorSet).CheckResult();
