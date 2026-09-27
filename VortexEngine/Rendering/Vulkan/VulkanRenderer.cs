@@ -15,35 +15,20 @@ namespace VortexEngine.Rendering.Vulkan;
 internal sealed unsafe class VulkanRenderer : IDisposable
 {
     private const int MaxFramesInFlight = 2;
-
-    private VkShaderModule brdfLutShader;
+    private readonly VulkanContext context;
+    private readonly List<Mesh> meshes = [];
+    private readonly ShaderManager shaderManager;
+    private readonly SwapchainManager swapchain;
+    private readonly SyncManager sync;
+    private readonly TextureManager textureManager;
     private VkCommandBuffer[] commandBuffers = null!;
-
     private VkCommandPool commandPool;
-    private VulkanContext context;
-
     private int currentFrame = 0;
-
     private VkDescriptorPool descriptorPool;
-
     private VmaAllocation frameConstantAllocation;
-
     private VkBuffer frameConstantBuffer;
     private VkDescriptorSet frameDescriptorSet;
-
-    private uint imageCount;
-
-    private List<Mesh> meshes = [];
-
-    // Debug Mesh Stuff
     private float rotation;
-
-    private ShaderManager shaderManager;
-
-    private SwapchainManager swapchain;
-
-    private SyncManager sync;
-    private TextureManager textureManager;
 
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
@@ -54,7 +39,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
         CreateCommandPool();
         CreateDescriptorPool();
-        textureManager = new TextureManager(context, descriptorPool, commandPool);
+        textureManager = new TextureManager(context, shaderManager, descriptorPool, commandPool);
 
         CreateFrameConstantBuffer();
         CreateFrameDescriptorSet();
@@ -350,149 +335,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         Vma.vmaDestroyBuffer(context.Allocator, stagingBuffer, stagingAlloc);
     }
 
-    private void UploadMeshData(ReadOnlySpan<byte> data, VkImage dstImage, uint width, uint height, VkFormat format)
-    {
-        var stagingBuffer = CreateBuffer((ulong)data.Length, VkBufferUsageFlags.TransferSrc,
-            VmaMemoryUsage.AutoPreferHost, out var stagingAlloc);
-
-        void* mapped = null;
-        Vma.vmaMapMemory(context.Allocator, stagingAlloc, &mapped).CheckResult();
-        data.CopyTo(new Span<byte>(mapped, data.Length));
-        Vma.vmaUnmapMemory(context.Allocator, stagingAlloc);
-
-        TransitionImageLayout(dstImage, format, VkImageLayout.Undefined, VkImageLayout.TransferDstOptimal);
-
-        CopyBufferToImage(stagingBuffer, dstImage, width, height);
-
-        TransitionImageLayout(dstImage, format, VkImageLayout.TransferDstOptimal, VkImageLayout.ShaderReadOnlyOptimal);
-
-        Vma.vmaDestroyBuffer(context.Allocator, stagingBuffer, stagingAlloc);
-    }
-
-    private void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
-    {
-        var allocInfo = new VkCommandBufferAllocateInfo
-        {
-            sType = VkStructureType.CommandBufferAllocateInfo,
-            level = VkCommandBufferLevel.Primary,
-            commandPool = commandPool,
-            commandBufferCount = 1,
-        };
-
-        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
-
-        var beginInfo = new VkCommandBufferBeginInfo
-        {
-            sType = VkStructureType.CommandBufferBeginInfo,
-            flags = VkCommandBufferUsageFlags.OneTimeSubmit
-        };
-
-        context.DeviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
-
-        var barrier = new VkImageMemoryBarrier
-        {
-            sType = VkStructureType.ImageMemoryBarrier,
-            oldLayout = oldLayout,
-            newLayout = newLayout,
-            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            image = image,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = 0,
-                layerCount = 1
-            }
-        };
-
-        var srcStage = VkPipelineStageFlags.TopOfPipe;
-        var dstStage = VkPipelineStageFlags.FragmentShader;
-
-        if (oldLayout == VkImageLayout.Undefined && newLayout == VkImageLayout.TransferDstOptimal)
-        {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VkAccessFlags.TransferWrite;
-        }
-        else if (oldLayout == VkImageLayout.TransferDstOptimal && newLayout == VkImageLayout.ShaderReadOnlyOptimal)
-        {
-            barrier.srcAccessMask = VkAccessFlags.TransferWrite;
-            barrier.dstAccessMask = VkAccessFlags.ShaderRead;
-            dstStage = VkPipelineStageFlags.FragmentShader;
-        }
-
-        context.DeviceApi.vkCmdPipelineBarrier(cmd, srcStage, dstStage, VkDependencyFlags.None, 0, null, 0, null, 1,
-            &barrier);
-
-        context.DeviceApi.vkEndCommandBuffer(cmd).CheckResult();
-
-        var submitInfo = new VkSubmitInfo
-        {
-            sType = VkStructureType.SubmitInfo,
-            commandBufferCount = 1,
-            pCommandBuffers = &cmd
-        };
-
-        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
-
-        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
-    }
-
-    private void CopyBufferToImage(VkBuffer buffer, VkImage image, uint width, uint height)
-    {
-        var allocInfo = new VkCommandBufferAllocateInfo
-        {
-            sType = VkStructureType.CommandBufferAllocateInfo,
-            level = VkCommandBufferLevel.Primary,
-            commandPool = commandPool,
-            commandBufferCount = 1
-        };
-
-        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmd).CheckResult();
-
-        var beginInfo = new VkCommandBufferBeginInfo
-        {
-            sType = VkStructureType.CommandBufferBeginInfo,
-            flags = VkCommandBufferUsageFlags.OneTimeSubmit
-        };
-
-        context.DeviceApi.vkBeginCommandBuffer(cmd, &beginInfo).CheckResult();
-
-        var region = new VkBufferImageCopy
-        {
-            bufferOffset = 0,
-            bufferRowLength = 0,
-            bufferImageHeight = 0,
-            imageSubresource = new VkImageSubresourceLayers
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                mipLevel = 0,
-                baseArrayLayer = 0,
-                layerCount = 1,
-            },
-            imageOffset = new VkOffset3D { x = 0, y = 0, z = 0 },
-            imageExtent = new VkExtent3D { width = width, height = height, depth = 1 },
-        };
-
-        context.DeviceApi.vkCmdCopyBufferToImage(cmd, buffer, image, VkImageLayout.TransferDstOptimal, 1, &region);
-
-        context.DeviceApi.vkEndCommandBuffer(cmd).CheckResult();
-
-        var submitInfo = new VkSubmitInfo
-        {
-            sType = VkStructureType.SubmitInfo,
-            commandBufferCount = 1,
-            pCommandBuffers = &cmd
-        };
-
-        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
-
-        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmd);
-    }
-
     private Vector3[] ComputeNormals(Vector3[] positions, uint[] indices)
     {
         var normals = new Vector3[positions.Length];
@@ -558,7 +400,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         VkDescriptorSet descriptorSet;
         context.DeviceApi.vkAllocateDescriptorSets(&allocInfo, &descriptorSet).CheckResult();
 
-        var imageInfos = stackalloc VkDescriptorImageInfo[5];
+        var imageInfos = stackalloc VkDescriptorImageInfo[7];
 
         imageInfos[0] = new VkDescriptorImageInfo
         {
@@ -595,23 +437,26 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
         };
 
-        // imageInfos[5] = new VkDescriptorImageInfo
-        // {
-        //     sampler = textureManager.CubemapSampler,
-        //     imageView = textureManager.GetCubemapImageView(new CubemapHandle(0)),
-        //     imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-        // };
-        //
-        // imageInfos[6] = new VkDescriptorImageInfo
-        // {
-        //     sampler = textureManager.BrdfLutSampler,
-        //     imageView = textureManager.BrdfLutImageView,
-        //     imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-        // };
+        imageInfos[5] = new VkDescriptorImageInfo
+        {
+            sampler = textureManager.CubemapSampler,
+            imageView =
+                textureManager.GetCubemapImageView(
+                    new CubemapHandle(
+                        0)), // TODO: Probably store this somewhere instead of hard-coding for this texture.
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
 
-        var writeDescriptorSets = stackalloc VkWriteDescriptorSet[5];
+        imageInfos[6] = new VkDescriptorImageInfo
+        {
+            sampler = textureManager.BrdfLutSampler,
+            imageView = textureManager.BrdfLutImageView,
+            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
+        };
 
-        for (var i = 0; i < 5; i++)
+        var writeDescriptorSets = stackalloc VkWriteDescriptorSet[7];
+
+        for (var i = 0; i < 7; i++)
         {
             writeDescriptorSets[i] = new VkWriteDescriptorSet
             {
@@ -759,15 +604,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return textureManager.LoadTexture(imageData, width, height, format);
     }
 
-
-    public TextureHandle LoadHDRTexture(
-        float[] imageData,
-        uint width,
-        uint height)
-    {
-        return textureManager.LoadHDRTexture(imageData, width, height);
-    }
-
     private void TransitionDepthImage()
     {
         var allocInfo = new VkCommandBufferAllocateInfo
@@ -882,24 +718,6 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         }
     }
 
-    private void UploadHDRData(
-        float[] data,
-        VkImage image,
-        uint width,
-        uint height,
-        VkFormat format)
-    {
-        var byteData = MemoryMarshal.AsBytes(
-            data.AsSpan());
-
-        UploadMeshData(
-            byteData.ToArray(),
-            image,
-            width,
-            height,
-            format);
-    }
-
     private void UploadFrameConstants(FrameConstants constants)
     {
         void* mapped = null;
@@ -977,330 +795,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         return result;
     }
 
-    private void CreateCubemapSamplers()
-    {
-        var cubemapSamplerInfo = new VkSamplerCreateInfo
-        {
-            sType = VkStructureType.SamplerCreateInfo,
-            magFilter = VkFilter.Linear,
-            minFilter = VkFilter.Linear,
-            mipmapMode = VkSamplerMipmapMode.Linear,
-            addressModeU = VkSamplerAddressMode.ClampToEdge,
-            addressModeV = VkSamplerAddressMode.ClampToEdge,
-            addressModeW = VkSamplerAddressMode.ClampToEdge,
-            minLod = 0.0f,
-            maxLod = 0.0f,
-        };
-
-        // context.DeviceApi.vkCreateSampler(&cubemapSamplerInfo, null, out cubemapSampler).CheckResult();
-
-        var brdfSamplerInfo = new VkSamplerCreateInfo
-        {
-            sType = VkStructureType.SamplerCreateInfo,
-            magFilter = VkFilter.Linear,
-            minFilter = VkFilter.Linear,
-            mipmapMode = VkSamplerMipmapMode.Nearest,
-            addressModeU = VkSamplerAddressMode.ClampToEdge,
-            addressModeV = VkSamplerAddressMode.ClampToEdge,
-            addressModeW = VkSamplerAddressMode.ClampToEdge,
-            minLod = 0.0f,
-            maxLod = 1.0f,
-        };
-
-        // context.DeviceApi.vkCreateSampler(&brdfSamplerInfo, null, out brdfLUTSampler).CheckResult();
-    }
-
     public CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
     {
         return textureManager.LoadEquirectangularHDRI(hdrData, width, height);
-    }
-
-    private void ConvertEquirectangularToCubemap(VkImageView equirectView, VkImage cubemapImage, uint faceSize)
-    {
-        var descriptorLayout = shaderManager.GetDescriptorSetLayout("equirectangular_to_cubemap", 0);
-        var allocInfo = new VkDescriptorSetAllocateInfo
-        {
-            sType = VkStructureType.DescriptorSetAllocateInfo,
-            descriptorPool = descriptorPool,
-            descriptorSetCount = 1,
-            pSetLayouts = &descriptorLayout,
-        };
-
-        context.DeviceApi.vkAllocateDescriptorSets(allocInfo, out var descriptorSet).CheckResult();
-
-        var equirectImageInfo = new VkDescriptorImageInfo
-        {
-            // sampler = textureSamplers[0],
-            imageView = equirectView,
-            imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
-        };
-
-        var writeDescriptor = new VkWriteDescriptorSet
-        {
-            sType = VkStructureType.WriteDescriptorSet,
-            dstSet = descriptorSet,
-            dstBinding = 0,
-            descriptorCount = 1,
-            descriptorType = VkDescriptorType.CombinedImageSampler,
-            pImageInfo = &equirectImageInfo,
-        };
-
-        context.DeviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
-
-        // Transition cubemap to general layout
-        TransitionImageLayout(cubemapImage, VkFormat.R16G16B16A16Sfloat, VkImageLayout.Undefined,
-            VkImageLayout.General);
-
-        // Dispatch compute for each cubemap face (array layer)
-        for (var faceIndex = 0; faceIndex < 6; faceIndex++)
-        {
-            DispatchComputeForFace(descriptorSet, cubemapImage, faceSize, faceIndex);
-        }
-
-        // Transition to shader read
-        TransitionImageLayout(cubemapImage, VkFormat.R16G16B16A16Sfloat, VkImageLayout.General,
-            VkImageLayout.ShaderReadOnlyOptimal);
-    }
-
-    private void DispatchComputeForFace(VkDescriptorSet descriptorSet, VkImage cubemapImage, uint faceSize,
-        int faceIndex)
-    {
-        // Create storage view for this array layer
-        var viewInfo = new VkImageViewCreateInfo
-        {
-            sType = VkStructureType.ImageViewCreateInfo,
-            image = cubemapImage,
-            viewType = VkImageViewType.Image2D,
-            format = VkFormat.R16G16B16A16Sfloat,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = (uint)faceIndex,
-                layerCount = 1,
-            }
-        };
-
-        context.DeviceApi.vkCreateImageView(&viewInfo, null, out var storageView).CheckResult();
-
-        var storageImageInfo = new VkDescriptorImageInfo
-        {
-            imageView = storageView,
-            imageLayout = VkImageLayout.General,
-        };
-
-        var writeStorage = new VkWriteDescriptorSet
-        {
-            sType = VkStructureType.WriteDescriptorSet,
-            dstSet = descriptorSet,
-            dstBinding = 1,
-            descriptorCount = 1,
-            descriptorType = VkDescriptorType.StorageImage,
-            pImageInfo = &storageImageInfo,
-        };
-
-        context.DeviceApi.vkUpdateDescriptorSets(1, &writeStorage, 0, null);
-
-        // Allocate command buffer
-        var allocInfo = new VkCommandBufferAllocateInfo
-        {
-            sType = VkStructureType.CommandBufferAllocateInfo,
-            level = VkCommandBufferLevel.Primary,
-            commandPool = commandPool,
-            commandBufferCount = 1,
-        };
-
-        context.DeviceApi.vkAllocateCommandBuffer(&allocInfo, out var cmdBuffer).CheckResult();
-
-        var beginInfo = new VkCommandBufferBeginInfo
-        {
-            sType = VkStructureType.CommandBufferBeginInfo,
-            flags = VkCommandBufferUsageFlags.OneTimeSubmit,
-        };
-
-        context.DeviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
-
-        var imageMemoryBarrier = new VkImageMemoryBarrier
-        {
-            sType = VkStructureType.ImageMemoryBarrier,
-            srcAccessMask = 0,
-            dstAccessMask = VkAccessFlags.ShaderWrite,
-            oldLayout = VkImageLayout.General,
-            newLayout = VkImageLayout.General,
-            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            image = cubemapImage,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = (uint)faceIndex,
-                layerCount = 1,
-            }
-        };
-
-        context.DeviceApi.vkCmdPipelineBarrier(cmdBuffer,
-            VkPipelineStageFlags.TopOfPipe,
-            VkPipelineStageFlags.ComputeShader,
-            VkDependencyFlags.None,
-            0, null,
-            0, null,
-            1, &imageMemoryBarrier);
-
-
-        context.DeviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute,
-            shaderManager.GetComputePipeline("equirectangular_to_cubemap"));
-        context.DeviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute,
-            shaderManager.GetPipelineLayout("equirectangular_to_cubemap"),
-            0, 1, &descriptorSet, 0, null);
-
-        var faceIndexData = faceIndex;
-        context.DeviceApi.vkCmdPushConstants(cmdBuffer, shaderManager.GetPipelineLayout("equirectangular_to_cubemap"),
-            VkShaderStageFlags.Compute, 0,
-            (uint)sizeof(int), &faceIndexData);
-
-        uint groupSize = 8;
-        uint numGroups = (faceSize + groupSize - 1) / groupSize;
-        context.DeviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
-
-        context.DeviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
-
-        var submitInfo = new VkSubmitInfo
-        {
-            sType = VkStructureType.SubmitInfo,
-            commandBufferCount = 1,
-            pCommandBuffers = &cmdBuffer,
-        };
-
-        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
-
-        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
-        context.DeviceApi.vkDestroyImageView(storageView, null);
-    }
-
-    public void GenerateBRDFLUT()
-    {
-        const uint lutSize = 512;
-
-        var imageInfo = new VkImageCreateInfo
-        {
-            sType = VkStructureType.ImageCreateInfo,
-            imageType = VkImageType.Image2D,
-            format = VkFormat.R16G16Sfloat,
-            extent = new VkExtent3D { width = lutSize, height = lutSize, depth = 1 },
-            mipLevels = 1,
-            arrayLayers = 1,
-            samples = VkSampleCountFlags.Count1,
-            tiling = VkImageTiling.Optimal,
-            usage = VkImageUsageFlags.Storage | VkImageUsageFlags.Sampled,
-            sharingMode = VkSharingMode.Exclusive,
-            initialLayout = VkImageLayout.Undefined,
-        };
-
-        var allocInfo = new VmaAllocationCreateInfo
-        {
-            usage = VmaMemoryUsage.AutoPreferDevice
-        };
-
-        // Vma.vmaCreateImage(context.Allocator, imageInfo, allocInfo, out brdfLUTImage, out _, null).CheckResult();
-
-        var viewInfo = new VkImageViewCreateInfo
-        {
-            sType = VkStructureType.ImageViewCreateInfo,
-            // image = brdfLUTImage,
-            viewType = VkImageViewType.Image2D,
-            format = VkFormat.R16G16Sfloat,
-            subresourceRange = new VkImageSubresourceRange
-            {
-                aspectMask = VkImageAspectFlags.Color,
-                baseMipLevel = 0,
-                levelCount = 1,
-                baseArrayLayer = 0,
-                layerCount = 1,
-            }
-        };
-
-        // context.DeviceApi.vkCreateImageView(&viewInfo, null, out brdfLUTImageView).CheckResult();
-
-        // TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.Undefined, VkImageLayout.General);
-
-        var layout = shaderManager.GetDescriptorSetLayout("brdf_lut", 0);
-        var allocDescInfo = new VkDescriptorSetAllocateInfo
-        {
-            sType = VkStructureType.DescriptorSetAllocateInfo,
-            descriptorPool = descriptorPool,
-            descriptorSetCount = 1,
-            pSetLayouts = &layout
-        };
-
-        VkDescriptorSet brdfLutDescriptorSet;
-        context.DeviceApi.vkAllocateDescriptorSets(&allocDescInfo, &brdfLutDescriptorSet).CheckResult();
-
-        var storageImageInfo = new VkDescriptorImageInfo
-        {
-            // imageView = brdfLUTImageView,
-            imageLayout = VkImageLayout.General,
-        };
-
-        var writeDescriptor = new VkWriteDescriptorSet
-        {
-            sType = VkStructureType.WriteDescriptorSet,
-            dstSet = brdfLutDescriptorSet,
-            dstBinding = 0,
-            descriptorCount = 1,
-            descriptorType = VkDescriptorType.StorageImage,
-            pImageInfo = &storageImageInfo,
-        };
-
-        context.DeviceApi.vkUpdateDescriptorSets(1, &writeDescriptor, 0, null);
-
-        var allocCmdInfo = new VkCommandBufferAllocateInfo
-        {
-            sType = VkStructureType.CommandBufferAllocateInfo,
-            level = VkCommandBufferLevel.Primary,
-            commandPool = commandPool,
-            commandBufferCount = 1,
-        };
-
-        context.DeviceApi.vkAllocateCommandBuffer(&allocCmdInfo, out var cmdBuffer).CheckResult();
-
-        var beginInfo = new VkCommandBufferBeginInfo
-        {
-            sType = VkStructureType.CommandBufferBeginInfo,
-            flags = VkCommandBufferUsageFlags.OneTimeSubmit,
-        };
-
-        context.DeviceApi.vkBeginCommandBuffer(cmdBuffer, &beginInfo).CheckResult();
-
-        context.DeviceApi.vkCmdBindPipeline(cmdBuffer, VkPipelineBindPoint.Compute,
-            shaderManager.GetComputePipeline("brdf_lut"));
-        context.DeviceApi.vkCmdBindDescriptorSets(cmdBuffer, VkPipelineBindPoint.Compute,
-            shaderManager.GetPipelineLayout("brdf_lut"),
-            0, 1, &brdfLutDescriptorSet, 0, null);
-
-        uint groupSize = 8;
-        uint numGroups = (lutSize + groupSize - 1) / groupSize;
-        context.DeviceApi.vkCmdDispatch(cmdBuffer, numGroups, numGroups, 1);
-
-        context.DeviceApi.vkEndCommandBuffer(cmdBuffer).CheckResult();
-
-        var submitInfo = new VkSubmitInfo
-        {
-            sType = VkStructureType.SubmitInfo,
-            commandBufferCount = 1,
-            pCommandBuffers = &cmdBuffer,
-        };
-
-        context.DeviceApi.vkQueueSubmit(context.GraphicsQueue, submitInfo, VkFence.Null).CheckResult();
-        context.DeviceApi.vkQueueWaitIdle(context.GraphicsQueue).CheckResult();
-
-        context.DeviceApi.vkFreeCommandBuffers(commandPool, 1, &cmdBuffer);
-
-        // TransitionImageLayout(brdfLUTImage, VkFormat.R16G16Sfloat, VkImageLayout.General,
-        //     VkImageLayout.ShaderReadOnlyOptimal);
     }
 }
 
