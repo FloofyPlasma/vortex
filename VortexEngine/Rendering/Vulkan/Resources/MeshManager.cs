@@ -184,8 +184,7 @@ internal sealed class MeshManager : IDisposable
             sampler = textureManager.CubemapSampler,
             imageView =
                 textureManager.GetCubemapImageView(
-                    new CubemapHandle(
-                        0)), // TODO: Probably store this somewhere instead of hard-coding for this texture.
+                    textureManager.ActiveEnvironmentCubemap),
             imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
         };
 

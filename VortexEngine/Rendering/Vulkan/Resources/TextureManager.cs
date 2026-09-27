@@ -12,19 +12,16 @@ internal sealed class TextureManager : IDisposable
 {
     private readonly VkCommandPool commandPool;
     private readonly VulkanContext ctx;
+    private readonly List<CubemapData> cubemapTextures = [];
     private readonly VkDescriptorPool descriptorPool;
     private readonly ShaderManager shaderManager;
-
+    private readonly List<VkImageView> textureImageViews = [];
+    private readonly List<VkImage> textureImages = [];
+    private readonly List<VkSampler> textureSamplers = [];
     private VkImage brdfLutImage;
     private VkImageView brdfLutImageView;
     private VkSampler brdfLutSampler;
     private VkSampler cubemapSampler;
-
-    private List<CubemapData> cubemapTextures = [];
-    private List<VkImageView> textureImageViews = [];
-
-    private List<VkImage> textureImages = [];
-    private List<VkSampler> textureSamplers = [];
 
     public TextureManager(VulkanContext context, ShaderManager manager, VkDescriptorPool pool, VkCommandPool cmdPool)
     {
@@ -36,6 +33,8 @@ internal sealed class TextureManager : IDisposable
         CreateSamplers();
         GenerateBRDFLUT();
     }
+
+    public CubemapHandle ActiveEnvironmentCubemap { get; set; } = new(0);
 
     public VkImageView BrdfLutImageView => brdfLutImageView;
     public VkSampler BrdfLutSampler => brdfLutSampler;
