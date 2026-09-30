@@ -5,16 +5,14 @@ namespace VortexEngine.Components;
 
 public struct Camera : IComponent
 {
-    public float FieldOfView { get; set; }
-    public float NearPlane { get; set; }
-    public float FarPlane { get; set; }
-    public bool IsActive { get; set; }
-
     public Camera()
     {
-        FieldOfView = 45f;
-        NearPlane = 0.1f;
-        FarPlane = 1000f;
-        IsActive = false;
     }
+
+    public Vector3 Position { get; set; } = default;
+    public Vector3 Target { get; set; } = default;
+    public Vector3 Up { get; set; } = default;
+    public float FieldOfView { get; set; } = MathF.PI / 4.0f;
+    public float Near { get; set; } = 0.1f;
+    public float Far { get; set; } = 100.0f;
 }

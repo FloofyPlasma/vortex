@@ -27,6 +27,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkDescriptorSet frameDescriptorSet;
     private float rotation;
 
+
     public VulkanRenderer(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
         context = new VulkanContext(surfaceProvider);
@@ -55,6 +56,11 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         sync.Dispose();
         swapchain.Dispose();
         context.Dispose();
+    }
+
+    public void UpdateViewport(uint width, uint height)
+    {
+        // TODO: 
     }
 
     private void CreateCommandPool()
@@ -86,7 +92,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         }
     }
 
-    public void Render()
+    public void Render(RenderRequest request)
     {
         sync.WaitForFrame(currentFrame);
 
@@ -145,61 +151,53 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             // var model = Matrix4x4.CreateRotationY(rotation) * Matrix4x4.CreateRotationX(rotation) *
             // Matrix4x4.CreateScale(1.0f);
 
-            var model = Matrix4x4.CreateScale(0.5f) * Matrix4x4.CreateRotationX(MathF.PI);
+            var view = Matrix4x4.CreateLookAt(request.Camera.Position, request.Camera.Target, request.Camera.Up);
 
-            var view = Matrix4x4.CreateLookAt(
-                new Vector3(0, 15, 10),
-                Vector3.Zero,
-                Vector3.UnitY
-            );
+            var projection = Matrix4x4.CreatePerspectiveFieldOfView(request.Camera.FieldOfView,
+                request.ViewportWidth / (float)request.ViewportHeight,
+                request.Camera.Near,
+                request.Camera.Far);
 
-            var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-                MathF.PI / 4.0f,
-                swapchain.Extent.width / (float)swapchain.Extent.height,
-                0.1f,
-                100.0f
-            );
+            context.DeviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                shaderManager.GetGraphicsPipeline("pbr_mesh"));
 
-            var mvp = model * view * projection;
-
-            if (meshManager.GetMesh(new MeshHandle(0)).Primitives.Count > 0)
+            var frameConstants = new FrameConstants
             {
-                var mesh = meshManager.GetMesh(
-                    new MeshHandle(0)); // TODO: Probably store this somewhere instead of hard-coding for this mesh.
-                var offset = 0UL;
-                context.DeviceApi.vkCmdBindPipeline(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
-                    shaderManager.GetGraphicsPipeline("pbr_mesh"));
+                CameraPos = new Vector4(request.Camera.Position, 0),
+                DirectionalLight = new Vector4(request.Light.Direction, 0),
+                DirectionalColor = new Vector4(request.Light.Color, 0),
+                AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f), // TODO: move to request
+                DebugMode = 0,
+            };
 
-                var pushData = new PushConstants { Mvp = mvp, Model = model };
+            UploadFrameConstants(frameConstants);
+
+            fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
+            {
+                context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
+                    shaderManager.GetPipelineLayout("pbr_mesh"), 1, 1, pFrameDescriptorSet, 0, null);
+            }
+
+            foreach (var renderMesh in request.Meshes)
+            {
+                var mesh = meshManager.GetMesh(renderMesh.Handle);
+                if (mesh.Primitives.Count == 0)
+                    continue;
+
+                var mvp = renderMesh.Transform * view * projection;
+
+                var pushData = new PushConstants { Mvp = mvp, Model = renderMesh.Transform };
                 context.DeviceApi.vkCmdPushConstants(commandBuffers[imageIndex],
                     shaderManager.GetPipelineLayout("pbr_mesh"),
                     VkShaderStageFlags.Vertex, 0,
                     (uint)sizeof(PushConstants), &pushData);
-
-                var frameConstants = new FrameConstants
-                {
-                    CameraPos = new Vector4(0, 15, 10, 0),
-                    DirectionalLight = new Vector4(0, -2.5f, -3.5f, 2),
-                    DirectionalColor = new Vector4(0.8f, 0.8f, 0.8f, 0),
-                    AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f),
-                    DebugMode = 0, // 0 = full PBR, 1 = metallic, 2 = roughness, 3 = normal, 4 = AO
-                };
-
-                UploadFrameConstants(frameConstants);
-
-                fixed (VkDescriptorSet* pFrameDescriptorSet = &frameDescriptorSet)
-                {
-                    context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
-                        shaderManager.GetPipelineLayout("pbr_mesh"), 1, 1, pFrameDescriptorSet, 0, null);
-                }
 
                 foreach (var primitive in mesh.Primitives)
                 {
                     context.DeviceApi.vkCmdBindDescriptorSets(commandBuffers[imageIndex], VkPipelineBindPoint.Graphics,
                         shaderManager.GetPipelineLayout("pbr_mesh"), 0, 1, &primitive.DescriptorSet, 0, null);
 
-                    context.DeviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer,
-                        offset);
+                    context.DeviceApi.vkCmdBindVertexBuffer(commandBuffers[imageIndex], 0, primitive.VertexBuffer, 0);
                     context.DeviceApi.vkCmdBindIndexBuffer(commandBuffers[imageIndex], primitive.IndexBuffer, 0,
                         VkIndexType.Uint32);
                     context.DeviceApi.vkCmdDrawIndexed(commandBuffers[imageIndex], primitive.IndexCount, 1, 0, 0, 0);

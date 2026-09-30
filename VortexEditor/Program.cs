@@ -1,7 +1,8 @@
 ﻿using System.Diagnostics;
+using System.Numerics;
 using VortexEditor.Platform;
 using VortexEngine;
-using VortexEngine.Rendering;
+using VortexEngine.Components;
 
 namespace VortexEditor;
 
@@ -22,6 +23,31 @@ internal class Program
             var meshBytes = File.ReadAllBytes("VortexEditor/Assets/MetalRoughSpheres.glb");
             var meshHandle = engine.Renderer.LoadMesh(meshBytes);
 
+            var meshEntity = engine.World.CreateEntity();
+            engine.World.AddComponent(meshEntity, new Transform
+            {
+                Position = Vector3.Zero,
+                Rotation = Quaternion.Identity,
+                Scale = Vector3.One
+            });
+            engine.World.AddComponent(meshEntity, new MeshRenderer { MeshHandle = meshHandle });
+
+            var cameraEntity = engine.World.CreateEntity();
+            engine.World.AddComponent(cameraEntity, new Camera
+            {
+                Position = new Vector3(0, 15, 10),
+                Target = Vector3.Zero,
+                Up = Vector3.UnitY,
+            });
+
+            var lightEntity = engine.World.CreateEntity();
+            engine.World.AddComponent(lightEntity, new DirectionalLight
+            {
+                Direction = new Vector3(0, -2.5f, -3.5f),
+                Color = new Vector3(0.8f, 0.8f, 0.8f),
+                Intensity = 1.0f,
+            });
+
             var clock = Stopwatch.StartNew();
 
             while (window.IsOpen)
@@ -32,8 +58,7 @@ internal class Program
                 clock.Restart();
 
                 engine.Update(dt);
-                var scene = engine.ExtractRenderScene();
-                engine.Renderer.Render(new RenderRequest());
+                engine.Render();
 
                 window.Present();
             }
