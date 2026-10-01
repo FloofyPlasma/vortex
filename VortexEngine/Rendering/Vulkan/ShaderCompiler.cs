@@ -1,12 +1,11 @@
-using Vortice.Vulkan;
 using Vortice.ShaderCompiler;
+using Vortice.Vulkan;
 
 namespace VortexEngine.Rendering.Vulkan;
 
 internal static class ShaderCompiler
 {
-    public static unsafe VkShaderModule CreateShaderModule(VkDeviceApi deviceApi, byte[] spirvCode,
-        string? label = null)
+    public static unsafe VkShaderModule CreateShaderModule(VkDeviceApi deviceApi, byte[] spirvCode)
     {
         if (spirvCode.Length == 0) throw new InvalidOperationException("SPIR-V code is empty");
         if (spirvCode.Length % 4 != 0)
@@ -32,15 +31,17 @@ internal static class ShaderCompiler
         options.ShaderStage = shaderKind;
 
         var result = compiler.Compile(glslSource, label ?? "shader", options);
-        return result.Status != CompilationStatus.Success ? throw new InvalidOperationException($"Shader compilation failed ({label}): {result.ErrorMessage}") : result.Bytecode;
+        return result.Status != CompilationStatus.Success
+            ? throw new InvalidOperationException($"Shader compilation failed ({label}): {result.ErrorMessage}")
+            : result.Bytecode;
     }
 
-    public static byte[] LoadAndCompileGlsl(string filePath, ShaderKind shaderKind)
+    public static byte[] LoadAndCompileGlsl(string filePath, ShaderKind shaderKind, string? label = null)
     {
         if (!File.Exists(filePath))
             throw new FileNotFoundException($"Shader file not found: {filePath}");
 
         var glslSource = File.ReadAllText(filePath);
-        return CompileGlslToSpirv(glslSource, shaderKind, filePath);
+        return CompileGlslToSpirv(glslSource, shaderKind, label);
     }
 }
