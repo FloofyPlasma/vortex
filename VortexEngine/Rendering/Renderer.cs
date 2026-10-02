@@ -16,6 +16,11 @@ public sealed class Renderer : IDisposable
         vulkanRenderer = new VulkanRenderer(surfaceProvider, width, height);
     }
 
+    public void UpdateViewport(uint width, uint height)
+    {
+        vulkanRenderer?.UpdateViewport(width, height);
+    }
+
     public MeshHandle LoadMesh(byte[] meshData)
     {
         return vulkanRenderer.LoadMesh(meshData);
@@ -28,7 +33,7 @@ public sealed class Renderer : IDisposable
 
     public void Render(RenderRequest request)
     {
-        vulkanRenderer?.Render();
+        vulkanRenderer?.Render(request);
     }
 
     public void Present()
