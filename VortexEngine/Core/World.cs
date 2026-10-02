@@ -1,11 +1,9 @@
-using System.Collections.Generic;
-
 namespace VortexEngine.Core;
 
 public sealed class World
 {
-    private uint nextEntityId = 0;
     private Dictionary<EntityId, Dictionary<Type, IComponent>> entities = new();
+    private uint nextEntityId = 0;
 
     public EntityId CreateEntity()
     {
@@ -25,7 +23,7 @@ public sealed class World
     public bool TryGetComponent<T>(EntityId entity, out T component) where T : IComponent
     {
         component = default!;
-        
+
         if (!entities.TryGetValue(entity, out var components))
             return false;
 

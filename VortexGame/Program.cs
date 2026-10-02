@@ -1,4 +1,4 @@
-﻿namespace VortexGame;
+namespace VortexGame;
 
 class Program
 {
