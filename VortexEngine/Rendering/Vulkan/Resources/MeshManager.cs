@@ -1,11 +1,10 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using SharpGLTF.Schema2;
-using SixLabors.ImageSharp.PixelFormats;
+using StbImageSharp;
 using VortexEngine.Rendering.Vulkan.Core;
 using VortexEngine.Rendering.Vulkan.Shaders;
 using Vortice.Vulkan;
-using Image = SixLabors.ImageSharp.Image;
 
 namespace VortexEngine.Rendering.Vulkan.Resources;
 
@@ -415,14 +414,12 @@ internal sealed class MeshManager : IDisposable
         try
         {
             var imageData = image.Content.Content.ToArray();
-            using var img = Image.Load<Rgba32>(imageData);
-            var pixelBytes = new byte[img.Width * img.Height * 4];
-            img.CopyPixelDataTo(pixelBytes);
+            var img = ImageResult.FromMemory(imageData, ColorComponents.RedGreenBlueAlpha);
 
             var imageWidth = (uint)img.Width;
             var imageHeight = (uint)img.Height;
 
-            return textureManager.LoadTexture(pixelBytes, imageWidth, imageHeight);
+            return textureManager.LoadTexture(img.Data, imageWidth, imageHeight);
         }
         catch (Exception ex)
         {
