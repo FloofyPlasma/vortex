@@ -459,6 +459,7 @@ internal sealed class TextureManager : IDisposable
 
         var equirectHandle = LoadHDRTexture(image.Data, width, height);
         var equirectView = GetTextureImageView(equirectHandle);
+        var equirectSampler = GetTextureSampler(equirectHandle);
 
         const uint faceSize = 512;
 
@@ -502,7 +503,7 @@ internal sealed class TextureManager : IDisposable
 
         ctx.DeviceApi.vkCreateImageView(&viewInfo, null, out var cubemapView).CheckResult();
 
-        ConvertEquirectangularToCubemap(equirectView, cubemapImage, faceSize);
+        ConvertEquirectangularToCubemap(equirectView, equirectSampler, cubemapImage, faceSize);
 
         var cubemapData = new CubemapData
         {
@@ -516,7 +517,8 @@ internal sealed class TextureManager : IDisposable
         return new CubemapHandle((uint)(cubemapTextures.Count - 1));
     }
 
-    private unsafe void ConvertEquirectangularToCubemap(VkImageView equirectView, VkImage cubemapImage, uint faceSize)
+    private unsafe void ConvertEquirectangularToCubemap(VkImageView equirectView, VkSampler equirectSampler,
+        VkImage cubemapImage, uint faceSize)
     {
         var descriptorLayout = shaderManager.GetDescriptorSetLayout("equirectangular_to_cubemap", 0);
         var allocInfo = new VkDescriptorSetAllocateInfo
@@ -532,6 +534,7 @@ internal sealed class TextureManager : IDisposable
         var equirectImageInfo = new VkDescriptorImageInfo
         {
             imageView = equirectView,
+            sampler = equirectSampler,
             imageLayout = VkImageLayout.ShaderReadOnlyOptimal,
         };
 
