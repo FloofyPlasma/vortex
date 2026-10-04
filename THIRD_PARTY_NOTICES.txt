@@ -1,0 +1,30 @@
+THIRD-PARTY NOTICES
+===================
+
+Vortex is MIT licensed (see ./LICENSE). This covers only Vortex's source code.
+
+The files below are third-party material that ship with Vortex. They have their own
+licenses, which you must honor if you redistribute Vortex.
+
+Sample assets are in VortexEditor/Assets. NuGet packages are restored at build time
+and listed in ./DEPENDENCIES.md instead.
+
+-------------------------------------------------------------------------------
+SAMPLE ASSETS  (VortexEditor/Assets)
+-------------------------------------------------------------------------------
+
+MetalRoughSpheres.glb
+  From:      Khronos glTF Sample Assets - "MetalRoughSpheres"
+  Creator:   (c) 2017, Analytical Graphics, Inc.
+             Ed Mackey for Everything
+  License:   Creative Commons Attribution 4.0 International (CC-BY-4.0)
+  Terms:     https://creativecommons.org/licenses/by/4.0/
+  Upstream:  https://github.com/KhronosGroup/glTF-Sample-Assets
+             Models/MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb
+
+
+Workshop.hdr
+  From:      "artist_workshop" HDRI from Poly Haven
+  License:   CC0 1.0 Universal / Public Domain Dedication (CC0-1.0)
+  Terms:     https://polyhaven.com/license
+  Upstream:  https://polyhaven.com/a/artist_workshop

@@ -16,8 +16,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AssimpNetter" Version="6.0.5" />
-    <PackageReference Include="JoltPhysicsSharp" Version="2.22.0" />
     <PackageReference Include="SharpGLTF.Core" Version="1.0.7"/>
     <PackageReference Include="StbImageSharp" Version="2.30.16"/>
     <PackageReference Include="Vortice.ShaderCompiler" Version="1.9.0" />
