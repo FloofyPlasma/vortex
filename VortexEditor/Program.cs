@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Numerics;
 using VortexEditor.Platform;
 using VortexEngine;
@@ -17,7 +17,7 @@ internal class Program
         {
             engine.Initialize(window);
 
-            var hdrData = File.ReadAllBytes("VortexEditor/Assets/Workshop.exr");
+            var hdrData = File.ReadAllBytes("VortexEditor/Assets/Workshop.hdr");
             var cubemapHandle = engine.Renderer.LoadEquirectangularHDRI(hdrData, 2048, 1024);
 
             var meshBytes = File.ReadAllBytes("VortexEditor/Assets/MetalRoughSpheres.glb");

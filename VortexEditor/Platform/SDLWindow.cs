@@ -78,6 +78,12 @@ public class SDLWindow : IPlatformWindow, IVulkanSurfaceProvider
                         Y = evt.Button.Y
                     });
                     break;
+
+                case (uint)SDL.EventType.WindowPixelSizeChanged:
+                    Width = (uint)evt.Window.Data1;
+                    Height = (uint)evt.Window.Data2;
+                    OnResize?.Invoke(Width, Height);
+                    break;
             }
         }
     }

@@ -1,10 +1,9 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
-using SixLabors.ImageSharp.PixelFormats;
+using StbImageSharp;
 using VortexEngine.Rendering.Vulkan.Core;
 using VortexEngine.Rendering.Vulkan.Shaders;
 using Vortice.Vulkan;
-using Image = SixLabors.ImageSharp.Image;
 
 namespace VortexEngine.Rendering.Vulkan.Resources;
 
@@ -456,31 +455,9 @@ internal sealed class TextureManager : IDisposable
 
     public unsafe CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
     {
-        using var imageData = Image.Load<RgbaVector>(hdrData);
+        var image = ImageResultFloat.FromMemory(hdrData, ColorComponents.RedGreenBlueAlpha);
 
-        var pixelData = new float[imageData.Width * imageData.Height * 4];
-
-        imageData.ProcessPixelRows(accessor =>
-        {
-            for (var y = 0; y < accessor.Height; y++)
-            {
-                var row = accessor.GetRowSpan(y);
-
-                for (var x = 0; x < row.Length; x++)
-                {
-                    var pixel = row[x];
-
-                    var index = (y * row.Length + x) * 4;
-
-                    pixelData[index + 0] = pixel.R;
-                    pixelData[index + 1] = pixel.G;
-                    pixelData[index + 2] = pixel.B;
-                    pixelData[index + 3] = pixel.A;
-                }
-            }
-        });
-
-        var equirectHandle = LoadHDRTexture(pixelData, width, height);
+        var equirectHandle = LoadHDRTexture(image.Data, width, height);
         var equirectView = GetTextureImageView(equirectHandle);
 
         const uint faceSize = 512;
