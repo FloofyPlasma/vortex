@@ -9,10 +9,14 @@ public sealed class Renderer : IDisposable
     public void Dispose()
     {
         vulkanRenderer?.Dispose();
+        vulkanRenderer = null;
     }
 
     public void Initialize(IVulkanSurfaceProvider surfaceProvider, uint width, uint height)
     {
+        if (vulkanRenderer is not null)
+            throw new InvalidOperationException("Renderer is already initialized");
+
         vulkanRenderer = new VulkanRenderer(surfaceProvider, width, height);
     }
 
@@ -23,12 +27,18 @@ public sealed class Renderer : IDisposable
 
     public MeshHandle LoadMesh(byte[] meshData)
     {
-        return vulkanRenderer.LoadMesh(meshData);
+        return RequireRenderer().LoadMesh(meshData);
     }
 
     public CubemapHandle? LoadEquirectangularHDRI(byte[] hdrData, uint width, uint height)
     {
-        return vulkanRenderer.LoadEquirectangularHDRI(hdrData, width, height);
+        return RequireRenderer().LoadEquirectangularHDRI(hdrData, width, height);
+    }
+
+    private VulkanRenderer RequireRenderer()
+    {
+        return vulkanRenderer
+               ?? throw new InvalidOperationException("Renderer has not been initialized; call Initialize first");
     }
 
     public void Render(RenderRequest request)

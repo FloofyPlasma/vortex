@@ -21,6 +21,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkCommandBuffer[] commandBuffers = null!;
     private VkCommandPool commandPool;
     private int currentFrame = 0;
+    private bool disposed;
     private VkDescriptorPool descriptorPool;
     private VmaAllocation frameConstantAllocation;
     private VkBuffer frameConstantBuffer;
@@ -48,6 +49,12 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
+
+        context.DeviceApi.vkDeviceWaitIdle().CheckResult();
+
+        DestroyCommandBuffers();
         Vma.vmaDestroyBuffer(context.Allocator, frameConstantBuffer, frameConstantAllocation);
 
         meshManager.Dispose();
@@ -55,12 +62,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         shaderManager.Dispose();
         sync.Dispose();
         swapchain.Dispose();
+
+        context.DeviceApi.vkDestroyDescriptorPool(descriptorPool);
+        context.DeviceApi.vkDestroyCommandPool(commandPool);
+
         context.Dispose();
     }
 
     public void UpdateViewport(uint width, uint height)
     {
-        if (!swapchain.NeedsRecreate(width, height))
+        if (disposed || !swapchain.NeedsRecreate(width, height))
             return;
 
         context.DeviceApi.vkDeviceWaitIdle().CheckResult();
@@ -114,7 +125,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void Render(RenderRequest request)
     {
-        if (commandBuffers.Length == 0)
+        if (disposed || commandBuffers.Length == 0)
             return;
 
         sync.WaitForFrame(currentFrame);

@@ -5,10 +5,11 @@ namespace VortexEngine.Rendering.Vulkan.Core;
 internal sealed class SwapchainManager : IDisposable
 {
     private readonly VulkanContext ctx;
-    private VkImage depthImage;
+    private VkImage depthImage = VkImage.Null;
     private VmaAllocation depthImageAllocation;
-    private VkImageView depthImageView;
-    private VkSwapchainKHR swapchain;
+    private VkImageView depthImageView = VkImageView.Null;
+    private bool disposed;
+    private VkSwapchainKHR swapchain = VkSwapchainKHR.Null;
 
     public SwapchainManager(VulkanContext context, uint width, uint height)
     {
@@ -22,20 +23,18 @@ internal sealed class SwapchainManager : IDisposable
     public VkSwapchainKHR Swapchain => swapchain;
     public VkExtent2D Extent { get; private set; }
     public VkFormat ImageFormat { get; private set; }
-    public VkImageView[] ImageViews { get; private set; }
+    public VkImageView[] ImageViews { get; private set; } = [];
     public VkImageView DepthImageView => depthImageView;
     public VkImage DepthImage => depthImage;
-    public VkImage[] Images { get; private set; }
+    public VkImage[] Images { get; private set; } = [];
     public uint ImageCount { get; private set; }
 
     public void Dispose()
     {
-        unsafe
-        {
-            ctx.DeviceApi.vkDestroyImageView(depthImageView, null);
-        }
+        if (disposed) return;
+        disposed = true;
 
-        Vma.vmaDestroyImage(ctx.Allocator, depthImage, depthImageAllocation);
+        DestroySwapchainResources();
     }
 
     public bool NeedsRecreate(uint width, uint height)

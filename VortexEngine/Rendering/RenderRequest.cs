@@ -8,7 +8,7 @@ public sealed class RenderRequest
     public uint ViewportWidth { get; set; }
     public uint ViewportHeight { get; set; }
     public Camera Camera { get; set; }
-    public IReadOnlyList<RenderMesh> Meshes { get; set; }
+    public IReadOnlyList<RenderMesh> Meshes { get; set; } = [];
     public DirectionalLight Light { get; set; }
 }
 
