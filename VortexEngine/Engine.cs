@@ -12,6 +12,7 @@ namespace VortexEngine;
 
 public sealed class Engine : IDisposable
 {
+    private bool disposed;
     private IPlatformWindow? window;
 
     public Engine()
@@ -31,19 +32,23 @@ public sealed class Engine : IDisposable
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
+
         if (window != null)
         {
-            window.OnResize -= (w, h) => Renderer.UpdateViewport(w, h);
+            window.OnResize -= HandleResize;
             window.OnKeyDown -= HandleKeyDown;
             window.OnKeyUp -= HandleKeyUp;
             window.OnMouseMotion -= HandleMouseMotion;
             window.OnMouseButtonDown -= HandleMouseButtonDown;
             window.OnMouseButtonUp -= HandleMouseButtonUp;
             window.OnClosing -= HandleWindowClosing;
+            window = null;
         }
 
-        Renderer?.Dispose();
-        Audio?.Dispose();
+        Renderer.Dispose();
+        Audio.Dispose();
     }
 
     public void Initialize(IPlatformWindow platformWindow)
@@ -51,18 +56,25 @@ public sealed class Engine : IDisposable
         window = platformWindow;
 
         if (platformWindow is not IVulkanSurfaceProvider surfaceProvider)
+        {
             throw new InvalidOperationException(
                 "IPlatformWindow must also implement IVulkanSurfaceProvider for Vulkan rendering");
+        }
 
         Renderer.Initialize(surfaceProvider, platformWindow.Width, platformWindow.Height);
 
-        window.OnResize += (w, h) => Renderer.UpdateViewport(w, h);
+        window.OnResize += HandleResize;
         window.OnKeyDown += HandleKeyDown;
         window.OnKeyUp += HandleKeyUp;
         window.OnMouseMotion += HandleMouseMotion;
         window.OnMouseButtonDown += HandleMouseButtonDown;
         window.OnMouseButtonUp += HandleMouseButtonUp;
         window.OnClosing += HandleWindowClosing;
+    }
+
+    private void HandleResize(uint width, uint height)
+    {
+        Renderer.UpdateViewport(width, height);
     }
 
     private void HandleKeyDown(IKeyEvent key)

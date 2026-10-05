@@ -21,6 +21,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
     private VkCommandBuffer[] commandBuffers = null!;
     private VkCommandPool commandPool;
     private int currentFrame = 0;
+    private bool disposed;
     private VkDescriptorPool descriptorPool;
     private VmaAllocation frameConstantAllocation;
     private VkBuffer frameConstantBuffer;
@@ -48,6 +49,12 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
+
+        context.DeviceApi.vkDeviceWaitIdle().CheckResult();
+
+        DestroyCommandBuffers();
         Vma.vmaDestroyBuffer(context.Allocator, frameConstantBuffer, frameConstantAllocation);
 
         meshManager.Dispose();
@@ -55,12 +62,26 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         shaderManager.Dispose();
         sync.Dispose();
         swapchain.Dispose();
+
+        context.DeviceApi.vkDestroyDescriptorPool(descriptorPool);
+        context.DeviceApi.vkDestroyCommandPool(commandPool);
+
         context.Dispose();
     }
 
     public void UpdateViewport(uint width, uint height)
     {
-        // TODO: 
+        if (disposed || !swapchain.NeedsRecreate(width, height))
+            return;
+
+        context.DeviceApi.vkDeviceWaitIdle().CheckResult();
+
+        swapchain.Recreate(width, height);
+
+        DestroyCommandBuffers();
+        CreateCommandBuffers();
+
+        TransitionDepthImage();
     }
 
     private void CreateCommandPool()
@@ -73,6 +94,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         };
 
         context.DeviceApi.vkCreateCommandPool(&poolInfo, null, out commandPool).CheckResult();
+    }
+
+    private void DestroyCommandBuffers()
+    {
+        fixed (VkCommandBuffer* pCommandBuffers = commandBuffers)
+        {
+            context.DeviceApi.vkFreeCommandBuffers(commandPool, (uint)commandBuffers.Length, pCommandBuffers);
+        }
+
+        commandBuffers = [];
     }
 
     private unsafe void CreateCommandBuffers()
@@ -94,6 +125,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void Render(RenderRequest request)
     {
+        if (disposed || commandBuffers.Length == 0)
+            return;
+
         sync.WaitForFrame(currentFrame);
 
         var imageAvail = sync.GetImageAvailableSemaphore(currentFrame);
@@ -164,7 +198,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             var frameConstants = new FrameConstants
             {
                 CameraPos = new Vector4(request.Camera.Position, 0),
-                DirectionalLight = new Vector4(request.Light.Direction, 0),
+                DirectionalLight = new Vector4(request.Light.Direction, request.Light.Intensity),
                 DirectionalColor = new Vector4(request.Light.Color, 0),
                 AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f), // TODO: move to request
                 DebugMode = 0,

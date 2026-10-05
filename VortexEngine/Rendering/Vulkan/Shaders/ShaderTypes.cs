@@ -5,9 +5,9 @@ namespace VortexEngine.Rendering.Vulkan.Shaders;
 
 public class ShaderDefinition
 {
-    public string Name { get; set; }
-    public string VertexShaderPath { get; set; }
-    public string FragmentShaderPath { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string VertexShaderPath { get; set; } = string.Empty;
+    public string FragmentShaderPath { get; set; } = string.Empty;
 
     public List<VertexInputDefinition> VertexInputs { get; set; } = [];
     public List<DescriptorSetDefinition> DescriptorSets { get; set; } = [];
@@ -16,8 +16,8 @@ public class ShaderDefinition
 
 public class ComputeShaderDefinition
 {
-    public string Name { get; set; }
-    public string ComputeShaderPath { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string ComputeShaderPath { get; set; } = string.Empty;
 
     public List<DescriptorSetDefinition> DescriptorSets { get; set; } = [];
     public PushConstantDefinition? PushConstants { get; set; }
@@ -29,7 +29,7 @@ public class VertexInputDefinition
     public uint Binding { get; set; }
     public uint Offset { get; set; }
     public VkFormat Format { get; set; }
-    public string Name { get; set; }
+    public string Name { get; set; } = string.Empty;
 }
 
 public class PushConstantDefinition
@@ -50,7 +50,7 @@ public class DescriptorBinding
     public uint Binding { get; set; }
     public VkDescriptorType Type { get; set; }
     public VkShaderStageFlags Stages { get; set; }
-    public string Name { get; set; }
+    public string Name { get; set; } = string.Empty;
 }
 
 // TODO: Probably use OffsetOf for the offsets...
