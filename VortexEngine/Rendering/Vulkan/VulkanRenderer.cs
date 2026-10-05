@@ -60,7 +60,17 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void UpdateViewport(uint width, uint height)
     {
-        // TODO: 
+        if (!swapchain.NeedsRecreate(width, height))
+            return;
+
+        context.DeviceApi.vkDeviceWaitIdle().CheckResult();
+
+        swapchain.Recreate(width, height);
+
+        DestroyCommandBuffers();
+        CreateCommandBuffers();
+
+        TransitionDepthImage();
     }
 
     private void CreateCommandPool()
@@ -73,6 +83,16 @@ internal sealed unsafe class VulkanRenderer : IDisposable
         };
 
         context.DeviceApi.vkCreateCommandPool(&poolInfo, null, out commandPool).CheckResult();
+    }
+
+    private void DestroyCommandBuffers()
+    {
+        fixed (VkCommandBuffer* pCommandBuffers = commandBuffers)
+        {
+            context.DeviceApi.vkFreeCommandBuffers(commandPool, (uint)commandBuffers.Length, pCommandBuffers);
+        }
+
+        commandBuffers = [];
     }
 
     private unsafe void CreateCommandBuffers()
@@ -94,6 +114,9 @@ internal sealed unsafe class VulkanRenderer : IDisposable
 
     public void Render(RenderRequest request)
     {
+        if (commandBuffers.Length == 0)
+            return;
+
         sync.WaitForFrame(currentFrame);
 
         var imageAvail = sync.GetImageAvailableSemaphore(currentFrame);
@@ -164,7 +187,7 @@ internal sealed unsafe class VulkanRenderer : IDisposable
             var frameConstants = new FrameConstants
             {
                 CameraPos = new Vector4(request.Camera.Position, 0),
-                DirectionalLight = new Vector4(request.Light.Direction, 0),
+                DirectionalLight = new Vector4(request.Light.Direction, request.Light.Intensity),
                 DirectionalColor = new Vector4(request.Light.Color, 0),
                 AmbientColor = new Vector4(0.3f, 0.3f, 0.3f, 0.3f), // TODO: move to request
                 DebugMode = 0,

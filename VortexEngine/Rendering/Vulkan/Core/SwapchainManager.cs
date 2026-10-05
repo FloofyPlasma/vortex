@@ -15,7 +15,7 @@ internal sealed class SwapchainManager : IDisposable
         ctx = context;
 
         Extent = new VkExtent2D { width = width, height = height };
-        CreateSwapchain(width, height);
+        CreateSwapchainResources(width, height);
         CreateDepthImage();
     }
 
@@ -36,6 +36,29 @@ internal sealed class SwapchainManager : IDisposable
         }
 
         Vma.vmaDestroyImage(ctx.Allocator, depthImage, depthImageAllocation);
+    }
+
+    public bool NeedsRecreate(uint width, uint height)
+    {
+        if (width == 0 || height == 0)
+            return false;
+
+        var extent = ClampExtent(width, height);
+        return extent.width != Extent.width || extent.height != Extent.height;
+    }
+
+    public void Recreate(uint width, uint height)
+    {
+        if (!NeedsRecreate(width, height))
+            return;
+
+        var extent = ClampExtent(width, height);
+
+        DestroyDepthImage();
+        DestroySwapchainResources();
+
+        CreateSwapchainResources(extent.width, extent.height);
+        CreateDepthImage();
     }
 
     public uint AcquireNextImage(VkSemaphore imageAvailableSemaphore)
@@ -65,7 +88,37 @@ internal sealed class SwapchainManager : IDisposable
         ctx.DeviceApi.vkQueuePresentKHR(ctx.GraphicsQueue, &presentInfo).CheckResult();
     }
 
-    private void CreateSwapchain(uint width, uint height)
+    private void DestroySwapchainResources()
+    {
+        unsafe
+        {
+            foreach (var imageView in ImageViews)
+            {
+                ctx.DeviceApi.vkDestroyImageView(imageView, null);
+            }
+
+            ctx.DeviceApi.vkDestroySwapchainKHR(swapchain, null);
+        }
+
+        ImageViews = [];
+        Images = [];
+        ImageCount = 0;
+        swapchain = VkSwapchainKHR.Null;
+    }
+
+    private void DestroyDepthImage()
+    {
+        unsafe
+        {
+            ctx.DeviceApi.vkDestroyImageView(depthImageView, null);
+        }
+
+        Vma.vmaDestroyImage(ctx.Allocator, depthImage, depthImageAllocation);
+        depthImageView = VkImageView.Null;
+        depthImage = VkImage.Null;
+    }
+
+    private void CreateSwapchainResources(uint width, uint height)
     {
         ctx.InstanceApi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.PhysicalDevice, ctx.Surface,
             out var capabilities).CheckResult();
@@ -86,11 +139,8 @@ internal sealed class SwapchainManager : IDisposable
         ImageFormat = surfaceFormat.format;
         ImageCount = Math.Max(2, capabilities.minImageCount);
 
-        Extent = new VkExtent2D
-        {
-            width = Math.Min(Math.Max(width, capabilities.minImageExtent.width), capabilities.maxImageExtent.width),
-            height = Math.Min(Math.Max(height, capabilities.minImageExtent.height), capabilities.maxImageExtent.height)
-        };
+        var extent = ClampExtent(width, height, capabilities);
+        Extent = extent;
 
         var createInfo = new VkSwapchainCreateInfoKHR
         {
@@ -99,7 +149,7 @@ internal sealed class SwapchainManager : IDisposable
             minImageCount = ImageCount,
             imageFormat = surfaceFormat.format,
             imageColorSpace = surfaceFormat.colorSpace,
-            imageExtent = Extent,
+            imageExtent = extent,
             imageArrayLayers = 1,
             imageUsage = VkImageUsageFlags.ColorAttachment,
             imageSharingMode = VkSharingMode.Exclusive,
@@ -155,6 +205,26 @@ internal sealed class SwapchainManager : IDisposable
                 ImageViews[i] = imageView;
             }
         }
+    }
+
+    private VkExtent2D ClampExtent(uint width, uint height)
+    {
+        ctx.InstanceApi.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.PhysicalDevice, ctx.Surface,
+            out var capabilities).CheckResult();
+
+        return ClampExtent(width, height, capabilities);
+    }
+
+    private static VkExtent2D ClampExtent(uint width, uint height, VkSurfaceCapabilitiesKHR capabilities)
+    {
+        if (width == 0 || height == 0)
+            return capabilities.currentExtent;
+
+        return new VkExtent2D
+        {
+            width = Math.Min(Math.Max(width, capabilities.minImageExtent.width), capabilities.maxImageExtent.width),
+            height = Math.Min(Math.Max(height, capabilities.minImageExtent.height), capabilities.maxImageExtent.height)
+        };
     }
 
     private void CreateDepthImage()
