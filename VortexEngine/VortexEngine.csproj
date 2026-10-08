@@ -20,7 +20,7 @@
     <PackageReference Include="StbImageSharp" Version="2.30.16"/>
     <PackageReference Include="Vortice.ShaderCompiler" Version="1.9.0" />
     <PackageReference Include="Vortice.Vulkan" Version="3.3.0" />
-    <PackageReference Include="Vortice.VulkanMemoryAllocator" Version="1.7.0" />
+    <PackageReference Include="Vortice.VulkanMemoryAllocator" Version="1.8.0" />
   </ItemGroup>
 
 </Project>
